@@ -99,6 +99,33 @@ final class RegressionTests: XCTestCase {
         }
     }
 
+    func testBareSoundCaptionsNeverReachTranslation() {
+        for caption in ["掌声", "掌声。", "鼓掌", "音乐", "空白音频。", "无语音", "静音",
+                        "Applause.", "Clapping", "♪ Music ♪", "Silence", "No speech",
+                        "(掌声) [BLANK_AUDIO]"] {
+            XCTAssertNil(RecognizedSpeechText.cleaned(caption), caption)
+        }
+        for speech in ["请给他一点掌声", "播放音乐", "The applause was loud", "No speech is needed today"] {
+            XCTAssertEqual(RecognizedSpeechText.cleaned(speech), speech)
+        }
+    }
+
+    func testBriefNoiseDoesNotBecomeSpeechOrPartialPreview() {
+        let capture = AudioCapture()
+        var partials = 0
+        var utterances = 0
+        capture.onPartial = { _ in partials += 1 }
+        capture.onUtterance = { _ in utterances += 1 }
+        capture.startExternal()
+        capture.feedExternal(Array(repeating: 0, count: 16_000))
+        capture.feedExternal(Array(repeating: 0.2, count: 1_600))
+        capture.feedExternal(Array(repeating: 0, count: 32_000))
+        XCTAssertNil(capture.takePendingSpeech(), "短促噪声不能作为待翻译语音")
+        XCTAssertEqual(partials, 0)
+        XCTAssertEqual(utterances, 0)
+        capture.stop()
+    }
+
     func testStalledTextRequestCanExpireAndBeResent() async {
         let controller = ConversationController()
         controller.selectMode(.dialogue)
