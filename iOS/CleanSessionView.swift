@@ -187,46 +187,79 @@ struct CleanSessionView: View {
     private var liveControls: some View {
         VStack(spacing: 13) {
             LiveLanguagePicker(preferences: preferences, fallback: controller.lastOtherLanguage)
-            HStack(spacing: 34) {
-                VStack(spacing: 7) {
-                    Button {
-                        if active { controller.end(save: true) }
-                        else { Task { await controller.start() } }
-                    } label: {
-                        Image(systemName: active ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 36, weight: .medium))
-                            .foregroundStyle(.white)
-                            .frame(width: 94, height: 94)
-                            .background(StudioStyle.blue, in: Circle())
+            if active {
+                HStack(spacing: 18) {
+                    liveActionButton(symbol: preferences.autoReadAloud
+                                     ? "speaker.wave.2.fill" : "speaker.slash.fill",
+                                     tint: preferences.autoReadAloud ? StudioStyle.blue : .gray,
+                                     accessibilityLabel: preferences.autoReadAloud
+                                     ? "关闭译文朗读" : "开启译文朗读") {
+                        controller.toggleReadAloud()
                     }
-                    .disabled(controller.isPreparing || controller.isBroadcastMode ||
-                              (controller.phase == .replaying && !controller.isRunning))
-                    Text(controller.isBroadcastMode ? "屏幕音频中" : active ? "停止" : "麦克风")
+                    liveActionButton(symbol: "pause.fill", tint: StudioStyle.blue,
+                                     accessibilityLabel: "暂停同传") {
+                        controller.pause()
+                    }
+                    liveActionButton(symbol: "stop.fill", tint: .red,
+                                     accessibilityLabel: "结束并保存") {
+                        controller.end(save: true)
+                    }
                 }
+            } else {
+                HStack(spacing: 34) {
+                    VStack(spacing: 7) {
+                        Button { Task { await controller.start() } } label: {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 36, weight: .medium))
+                                .foregroundStyle(.white)
+                                .frame(width: 94, height: 94)
+                                .background(StudioStyle.blue, in: Circle())
+                        }
+                        .disabled(controller.isPreparing || controller.isBroadcastMode ||
+                                  controller.phase == .replaying)
+                        Text(controller.isBroadcastMode ? "屏幕音频中" : "麦克风")
+                    }
                 #if !EAR_YI_DEVICE_TEST
-                VStack(spacing: 7) {
-                    ScreenBroadcastControl()
-                        .frame(width: 94, height: 94)
-                        .background(StudioStyle.violet, in: Circle())
-                    Text("屏幕广播")
-                }
+                    VStack(spacing: 7) {
+                        ScreenBroadcastControl()
+                            .frame(width: 94, height: 94)
+                            .background(StudioStyle.violet, in: Circle())
+                        Text("屏幕广播")
+                    }
                 #endif
+                }
             }
-            .font(.subheadline.weight(.semibold))
             #if EAR_YI_DEVICE_TEST
-            Text("选择麦克风开始同传")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(StudioStyle.ink)
+            if !active {
+                Text("选择麦克风开始同传")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(StudioStyle.ink)
+            }
             #else
-            Text(controller.isBroadcastMode ? "屏幕音频正在翻译，停止请点屏幕广播" :
-                 "选择麦克风，或广播其他 App 的屏幕音频")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(StudioStyle.ink)
+            if !active {
+                Text(controller.isBroadcastMode ? "屏幕音频正在翻译，停止请点屏幕广播" :
+                     "选择麦克风，或广播其他 App 的屏幕音频")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(StudioStyle.ink)
+            }
             #endif
             if !controller.lines.isEmpty { sessionActions }
         }
         .padding(.horizontal, 20).padding(.top, 15).padding(.bottom, 9)
         .background(Color.clear)
+    }
+
+    private func liveActionButton(symbol: String, tint: Color, accessibilityLabel: String,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 58, height: 58)
+                .background(.white, in: Circle())
+                .overlay(Circle().strokeBorder(tint.opacity(0.12)))
+        }
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var dialogueControls: some View {

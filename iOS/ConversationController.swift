@@ -279,6 +279,11 @@ final class ConversationController: ObservableObject {
         updateOutputRoute()
     }
 
+    func toggleReadAloud() {
+        preferences.autoReadAloud.toggle()
+        if !preferences.autoReadAloud { player.stop() }
+    }
+
     func overrideLanguage(_ code: String?) {
         correctionLanguage = code
     }
