@@ -239,6 +239,7 @@ final class ConversationController: ObservableObject {
     }
 
     func start() async {
+        usage.refreshDay()
         guard !isEnding, !isRunning, !isPreparing, phase != .replaying else { return }
         let requestedConversation = conversationID
         let requestedMode = mode
@@ -877,6 +878,7 @@ final class ConversationController: ObservableObject {
         guard !isEnding else { return }
         errorMessage = nil
         if inDialogue {
+            usage.refreshDay()
             guard subscriptions.isPro || usage.remainingDialogueLines > 0 else {
                 showPaywall = true
                 return

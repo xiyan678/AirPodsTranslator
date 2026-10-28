@@ -62,8 +62,8 @@ final class UsageMeter: ObservableObject {
 
     init() { refreshDay() }
 
-    var remainingLiveSeconds: Int { refreshDay(); return max(0, Self.freeLiveSeconds - liveSeconds) }
-    var remainingDialogueLines: Int { refreshDay(); return max(0, Self.freeDialogueLines - dialogueLines) }
+    var remainingLiveSeconds: Int { max(0, Self.freeLiveSeconds - liveSeconds) }
+    var remainingDialogueLines: Int { max(0, Self.freeDialogueLines - dialogueLines) }
 
     func track(active: Bool) {
         refreshDay()
@@ -85,7 +85,7 @@ final class UsageMeter: ObservableObject {
         UserDefaults.standard.set(dialogueLines, forKey: "usage.dialogueLines")
     }
 
-    private func refreshDay() {
+    func refreshDay() {
         let today = String(Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970))
         guard day != today else { return }
         let defaults = UserDefaults.standard
