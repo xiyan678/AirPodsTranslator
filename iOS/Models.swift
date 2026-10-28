@@ -96,21 +96,81 @@ enum AppLanguage {
 }
 
 enum RecognizedSpeechText {
-    private static let ignoredMarkers: Set<String> = [
-        "blankaudio", "noaudio", "nospeech", "空白音频", "无音频"
+    /// Whisper 在静音或环境声上常输出的“字幕标注”。只在整条结果都由这些标注
+    /// 组成时才丢弃；句子里出现同样的词（如“请给他一点掌声”）会原样保留。
+    private static let ignoredMarkers: [String] = [
+        "blankaudio", "noaudio", "nospeech", "silence", "applause", "clapping", "music",
+        "laughter", "cheering",
+        "空白音频", "无音频", "无语音", "静音", "掌声", "鼓掌", "音乐", "笑声"
     ]
 
+    /// 静音时 Whisper 常见的字幕署名类幻觉，正常对话中不会出现。
+    private static let hallucinatedCredits: [String] = ["amaraorg", "明镜与点点"]
+
     static func cleaned(_ rawValue: String) -> String? {
-        let text = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 去掉 WhisperKit 未跳过的特殊标记，如 <|startoftranscript|>、<|0.00|>。
+        let text = rawValue.replacingOccurrences(of: #"<\|[^|>]*\|>"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        let marker = text.lowercased()
+        // 去掉所有括号标注后，剩下的内容若为空或只是音效词，就不是有效语音。
+        let withoutAnnotations = text.replacingOccurrences(of: #"[\[（(【][^\]）)】]*[\]）)】]"#, with: " ",
+                                                           options: .regularExpression)
+        let marker = normalized(withoutAnnotations)
+        if marker.isEmpty || isMarkerSequence(marker) { return nil }
+        if hallucinatedCredits.contains(where: { marker.contains($0) }) { return nil }
+        return text
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .joined()
-        guard !ignoredMarkers.contains(marker) else { return nil }
-        // Whisper can emit caption annotations for non-speech sounds. Only reject
-        // complete annotation-only results, preserving spoken text around them.
-        let annotationPattern = #"^(?:\s*[\[（(【][^\]）)】]*[\]）)】]\s*[.,，。!?！？]*\s*)+$"#
-        if text.range(of: annotationPattern, options: .regularExpression) != nil { return nil }
-        return text
+    }
+
+    /// 判断整段文本是否只由音效词重复拼接而成，例如“掌声掌声”“applauseapplause”。
+    private static func isMarkerSequence(_ value: String) -> Bool {
+        let characters = Array(value)
+        var reachable = Array(repeating: false, count: characters.count + 1)
+        reachable[0] = true
+        for start in 0..<characters.count where reachable[start] {
+            for marker in ignoredMarkers {
+                let end = start + marker.count
+                if end <= characters.count, String(characters[start..<end]) == marker { reachable[end] = true }
+            }
+        }
+        return reachable[characters.count]
+    }
+}
+
+/// Whisper 单个识别段的质量指标，与 WhisperKit 的 TranscriptionSegment 字段对应。
+struct RecognizedSegment {
+    var text: String
+    var avgLogprob: Float
+    var compressionRatio: Float
+    var noSpeechProb: Float
+}
+
+enum SpeechSegmentFilter {
+    /// 与 Whisper 官方默认阈值一致。WhisperKit 用这些阈值触发温度回退，
+    /// 但回退用尽后仍会返回最后一次的低质量结果，所以这里需要再过滤一次。
+    static let minimumAverageLogprob: Float = -1.0
+    static let maximumCompressionRatio: Float = 2.4
+    /// WhisperKit 1.1.0 的 noSpeechProb 恒为 0（TextDecoder 中标注为 TODO），
+    /// 这一项目前不会生效；保留是为了升级到实现了该值的版本后自动起作用。
+    static let maximumNoSpeechProb: Float = 0.6
+
+    static func isSpeech(_ segment: RecognizedSegment) -> Bool {
+        guard segment.avgLogprob.isFinite, segment.compressionRatio.isFinite else { return false }
+        if segment.noSpeechProb > maximumNoSpeechProb { return false }
+        if segment.compressionRatio > maximumCompressionRatio { return false }
+        if segment.avgLogprob < minimumAverageLogprob { return false }
+        return RecognizedSpeechText.cleaned(segment.text) != nil
+    }
+
+    static func joinedText(_ segments: [RecognizedSegment]) -> String {
+        segments.filter(isSpeech)
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }

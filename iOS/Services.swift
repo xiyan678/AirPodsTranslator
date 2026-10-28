@@ -211,9 +211,16 @@ final class WhisperService: ObservableObject {
     func recognize(_ samples: [Float], language: String? = nil) async throws -> (text: String, language: String) {
         try await prepare()
         guard let model else { throw TranslatorError.modelUnavailable }
-        let options = DecodingOptions(language: language, detectLanguage: language == nil)
+        let options = DecodingOptions(language: language, detectLanguage: language == nil,
+                                      skipSpecialTokens: true, suppressBlank: true)
         let results = try await model.transcribe(audioArray: samples, decodeOptions: options)
-        let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        // 逐段按置信度过滤，不再直接拼接模型整段文本：静音和环境声产生的
+        // “掌声”“空白音频”等低置信度或重复段落不会进入翻译和播报。
+        let segments = results.flatMap(\.segments).map {
+            RecognizedSegment(text: $0.text, avgLogprob: $0.avgLogprob,
+                              compressionRatio: $0.compressionRatio, noSpeechProb: $0.noSpeechProb)
+        }
+        let text = SpeechSegmentFilter.joinedText(segments)
         let language = results.first?.language ?? ""
         return (text, language)
     }
@@ -319,17 +326,36 @@ final class AudioCapture: NSObject, ObservableObject {
     private var samples: [Float] = []
     private var beganSpeaking = false
     private var voicedSampleCount = 0
-    private var silenceSince: Date?
-    private var startedAt = Date()
-    private var lastPartial = Date()
+    /// 当前句末尾连续非语音的样本数。按样本而不是按墙钟计时，
+    /// 屏幕广播成批送来的音频也能得到正确的静音时长。
+    private var silentSampleCount = 0
+    /// samples 中最后一个语音帧结束的位置，用于裁掉句尾长静音。
+    private var lastVoicedEnd = 0
+    private var samplesSincePartial = 0
+    /// 环境底噪估计（dB）。持续的风扇声、空调声会逐渐抬高底噪，不再被当成说话。
+    private var noiseFloor: Float = -60
+
+    private static let sampleRate = 16_000
+    private static let frameLength = 320                 // 20 ms
+    private static let minimumVoicedSamples = 3_200      // 累计至少 0.2 秒语音才算一句话
+    private static let preRollSamples = 8_000            // 开口前保留 0.5 秒
+    private static let trailingSilenceKept = 4_800       // 句尾保留 0.3 秒，避免模型在长静音上编造内容
+    private static let noiseMargin: Float = 12           // 高于底噪 12 dB 才算语音
 
     func startExternal() {
         guard !isRecording else { return }
         isRecording = true
+        resetUtterance()
         samples = []
+        noiseFloor = -60
+    }
+
+    private func resetUtterance() {
         beganSpeaking = false
         voicedSampleCount = 0
-        silenceSince = nil
+        silentSampleCount = 0
+        lastVoicedEnd = 0
+        samplesSincePartial = 0
     }
 
     func feedExternal(_ chunk: [Float]) { append(chunk) }
@@ -371,6 +397,9 @@ final class AudioCapture: NSObject, ObservableObject {
             throw error
         }
         engine = next
+        resetUtterance()
+        samples = []
+        noiseFloor = -60
         isRecording = true
     }
 
@@ -381,63 +410,74 @@ final class AudioCapture: NSObject, ObservableObject {
         isRecording = false
         level = 0
         samples = []
-        beganSpeaking = false
-        voicedSampleCount = 0
-        silenceSince = nil
+        resetUtterance()
     }
 
     func takePendingSpeech() -> [Float]? {
-        guard beganSpeaking, voicedSampleCount >= 1_600 else { return nil }
-        let utterance = samples
+        guard beganSpeaking, voicedSampleCount >= Self.minimumVoicedSamples else { return nil }
+        let utterance = trimmedUtterance()
         samples = []
-        beganSpeaking = false
-        voicedSampleCount = 0
-        silenceSince = nil
+        resetUtterance()
         return utterance
+    }
+
+    /// 去掉句尾超过 0.3 秒的静音。Whisper 在长静音上容易编造“谢谢观看”“掌声”等内容。
+    private func trimmedUtterance() -> [Float] {
+        let end = min(samples.count, lastVoicedEnd + Self.trailingSilenceKept)
+        return Array(samples[..<end])
     }
 
     private func append(_ chunk: [Float]) {
         guard isRecording, !chunk.isEmpty else { return }
         let energy = sqrt(chunk.reduce(Float(0)) { $0 + $1 * $1 } / Float(chunk.count))
-        let decibels = 20 * log10(max(energy, 0.00001))
-        level = max(0, min(1, (decibels + 55) / 55))
-        let audible = decibels > (nearField ? -35 : -42)
-        samples.append(contentsOf: chunk)
-        let now = Date()
-        if audible {
-            if !beganSpeaking { startedAt = now; lastPartial = now }
-            beganSpeaking = true
-            voicedSampleCount += chunk.count
-            silenceSince = nil
-        } else if beganSpeaking && silenceSince == nil {
-            silenceSince = now
+        level = max(0, min(1, (Self.decibels(energy) + 55) / 55))
+        // 按 20 ms 帧判断，避免一个大块里的短促响声被整体算作语音。
+        for start in stride(from: 0, to: chunk.count, by: Self.frameLength) {
+            appendFrame(chunk[start..<min(start + Self.frameLength, chunk.count)])
         }
-        if !beganSpeaking {
-            if samples.count > 8_000 { samples.removeFirst(samples.count - 8_000) }
+    }
+
+    private func appendFrame(_ frame: ArraySlice<Float>) {
+        let rms = sqrt(frame.reduce(Float(0)) { $0 + $1 * $1 } / Float(frame.count))
+        let db = Self.decibels(rms)
+        let absoluteThreshold: Float = nearField ? -35 : -42
+        let voiced = db > max(absoluteThreshold, noiseFloor + Self.noiseMargin)
+        // 底噪快速下降、缓慢上升（约 6 秒追上持续噪声），说话间隙会把它拉回真实底噪。
+        let rate: Float = db < noiseFloor ? 0.3 : 0.003
+        noiseFloor = min(-20, max(-90, noiseFloor + (db - noiseFloor) * rate))
+
+        samples.append(contentsOf: frame)
+        if voiced {
+            if !beganSpeaking { beganSpeaking = true; samplesSincePartial = 0 }
+            voicedSampleCount += frame.count
+            silentSampleCount = 0
+            lastVoicedEnd = samples.count
+        } else if beganSpeaking {
+            silentSampleCount += frame.count
+        }
+        guard beganSpeaking else {
+            if samples.count > Self.preRollSamples { samples.removeFirst(samples.count - Self.preRollSamples) }
             return
         }
-        let silence = silenceSince.map { now.timeIntervalSince($0) } ?? 0
-        let minimumVoicedSamples = 1_600
-        let hasEnoughSpeech = voicedSampleCount >= minimumVoicedSamples
-        let silenceLimit = quality ? 1.5 : 1.2
-        let maximumSamples = 16_000 * (quality ? 30 : 20)
-        let reachedBoundary = silence > silenceLimit || samples.count >= maximumSamples
-        if reachedBoundary && hasEnoughSpeech {
-            let utterance = samples
+        samplesSincePartial += frame.count
+        let hasEnoughSpeech = voicedSampleCount >= Self.minimumVoicedSamples
+        let silenceLimit = Int(Double(Self.sampleRate) * (quality ? 1.5 : 1.2))
+        let maximumSamples = Self.sampleRate * (quality ? 30 : 20)
+        let partialInterval = Int(Double(Self.sampleRate) * (quality ? 1.8 : 1.2))
+        if silentSampleCount > silenceLimit || samples.count >= maximumSamples {
+            // 一句结束。累计语音不足 0.2 秒视为噪声（拍手、碰撞），直接丢弃，不送识别。
+            let utterance = hasEnoughSpeech ? trimmedUtterance() : nil
             samples = []
-            beganSpeaking = false
-            voicedSampleCount = 0
-            silenceSince = nil
-            onUtterance?(utterance)
-        } else if reachedBoundary {
-            samples = []
-            beganSpeaking = false
-            voicedSampleCount = 0
-            silenceSince = nil
-        } else if now.timeIntervalSince(lastPartial) >= (quality ? 1.8 : 1.2) {
-            lastPartial = now
+            resetUtterance()
+            if let utterance { onUtterance?(utterance) }
+        } else if hasEnoughSpeech, samplesSincePartial >= partialInterval {
+            samplesSincePartial = 0
             onPartial?(samples)
         }
+    }
+
+    private static func decibels(_ rms: Float) -> Float {
+        20 * log10(max(rms, 0.00001))
     }
 }
 

@@ -126,6 +126,55 @@ final class RegressionTests: XCTestCase {
         capture.stop()
     }
 
+    func testRepeatedCaptionsAndSpecialTokensAreDropped() {
+        for caption in ["掌声 掌声", "Applause. Applause.", "<|startoftranscript|><|zh|>(掌声)<|endoftext|>",
+                        "字幕由Amara.org社区提供", "♪♪"] {
+            XCTAssertNil(RecognizedSpeechText.cleaned(caption), caption)
+        }
+        XCTAssertEqual(RecognizedSpeechText.cleaned("<|0.00|> Hello<|1.00|>"), "Hello")
+    }
+
+    func testLowConfidenceAndRepetitiveSegmentsAreDropped() {
+        let segments = [
+            RecognizedSegment(text: " 你好", avgLogprob: -0.3, compressionRatio: 1.2, noSpeechProb: 0),
+            RecognizedSegment(text: " 谢谢观看", avgLogprob: -1.4, compressionRatio: 1.1, noSpeechProb: 0),
+            RecognizedSegment(text: " 好好好好好好好好", avgLogprob: -0.2, compressionRatio: 3.1, noSpeechProb: 0),
+            RecognizedSegment(text: " 静音", avgLogprob: -0.4, compressionRatio: 1.0, noSpeechProb: 0.9),
+            RecognizedSegment(text: " [BLANK_AUDIO]", avgLogprob: -0.1, compressionRatio: 1.0, noSpeechProb: 0),
+            RecognizedSegment(text: " 请给他一点掌声", avgLogprob: -0.5, compressionRatio: 1.3, noSpeechProb: 0)
+        ]
+        XCTAssertEqual(SpeechSegmentFilter.joinedText(segments), "你好 请给他一点掌声")
+        XCTAssertEqual(SpeechSegmentFilter.joinedText([segments[1], segments[4]]), "")
+    }
+
+    func testSteadyBackgroundNoiseStopsCountingAsSpeech() {
+        let capture = AudioCapture()
+        capture.nearField = false
+        var utterances: [[Float]] = []
+        capture.onUtterance = { utterances.append($0) }
+        capture.startExternal()
+        capture.feedExternal(Array(repeating: 0, count: 16_000))
+        // 约 -30 dB 的持续底噪（风扇、空调）连续 60 秒。
+        for _ in 0..<60 { capture.feedExternal(Array(repeating: 0.03, count: 16_000)) }
+        let countAfterAdapting = utterances.count
+        for _ in 0..<30 { capture.feedExternal(Array(repeating: 0.03, count: 16_000)) }
+        XCTAssertEqual(utterances.count, countAfterAdapting, "适应底噪后不能继续把持续噪声切成句子")
+        XCTAssertNil(capture.takePendingSpeech())
+        capture.stop()
+    }
+
+    func testUtteranceDropsLongTrailingSilence() {
+        let capture = AudioCapture()
+        var utterances: [[Float]] = []
+        capture.onUtterance = { utterances.append($0) }
+        capture.startExternal()
+        capture.feedExternal(Array(repeating: 0.2, count: 16_000))
+        capture.feedExternal(Array(repeating: 0, count: 32_000))
+        XCTAssertEqual(utterances.count, 1)
+        XCTAssertEqual(utterances.first?.count, 16_000 + 4_800)
+        capture.stop()
+    }
+
     func testStalledTextRequestCanExpireAndBeResent() async {
         let controller = ConversationController()
         controller.selectMode(.dialogue)
