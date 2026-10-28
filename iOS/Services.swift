@@ -254,7 +254,7 @@ final class AudioCapture: NSObject, ObservableObject {
         guard !isRecording else { return }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: nearField ? .voiceChat : .default,
-                                options: [.allowBluetoothA2DP, .defaultToSpeaker])
+                                options: [.allowBluetoothA2DP])
         try session.setActive(true)
         let next = AVAudioEngine()
         let input = next.inputNode
