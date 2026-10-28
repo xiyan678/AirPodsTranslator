@@ -6,8 +6,18 @@
 
 1. 安装 Xcode 26+ 和 [XcodeGen](https://github.com/yonaskolb/XcodeGen)。
 2. 在本目录执行 `xcodegen generate`，打开生成的 `AirPodsTranslator.xcodeproj`。
-3. 将 `project.yml` 的主 App、BroadcastUpload、Watch 三个 Bundle ID 换成自己的标识；同步修改 `Shared/BroadcastStorage.swift` 的广播扩展 ID、App Group ID，以及两个 `.entitlements` 中的 App Group ID。到 Apple Developer 后台给主 App 和 BroadcastUpload 启用同一个 App Group，再配置签名。
+3. **配置 Bundle ID 和 App Group**（屏幕广播功能必须）：
+   - 到 Apple Developer 后台创建主 App Bundle ID（例如 `com.yourcompany.AirPodsTranslator`）、广播扩展 Bundle ID（例如 `com.yourcompany.AirPodsTranslator.broadcast`）、Watch App Bundle ID（例如 `com.yourcompany.AirPodsTranslator.watchkitapp`）
+   - 创建 App Group（例如 `group.com.yourcompany.AirPodsTranslator.shared`），在主 App 和 BroadcastUpload 中都启用此 App Group
+   - 修改以下文件中的占位符 `com.example` 为你的实际 Bundle ID：
+     - `project.yml` 第 3 行 `bundleIdPrefix`、第 38 行 `PRODUCT_BUNDLE_IDENTIFIER`（主 App）、第 57 行（广播扩展）、第 67 行 `WKCompanionAppBundleIdentifier`、第 73 行（Watch App）
+     - `Shared/BroadcastStorage.swift` 第 4 行 `groupID`、第 5 行 `extensionBundleID`
+     - `iOS/AirPodsTranslator.entitlements` 第 5 行 App Group ID
+     - `BroadcastUpload/BroadcastUpload.entitlements` 第 5 行 App Group ID
+   - 重新执行 `xcodegen generate`，然后在 Xcode 中配置签名（Signing & Capabilities 标签页）
 4. 连接 iPhone 真机，编译运行。首次启动允许麦克风，并下载模型。
+
+**注意**：不配置真实的 Bundle ID 和 App Group，屏幕广播功能会报错"请先启用 App Group"，因为主 App 和广播扩展无法通过共享目录通信。其他功能（同传、对话、文本翻译、图片翻译）不受影响。
 
 ## Codemagic 云编译
 

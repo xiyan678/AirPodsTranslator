@@ -714,7 +714,7 @@ final class ConversationController: ObservableObject {
             if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }
             watch.publish(running: isRunning, latest: translated)
             status = "检测到\(AppLanguage.name(item.source))"
-            if !preferences.autoReadAloud || isBroadcastMode || isEnding {
+            if !preferences.autoReadAloud || isEnding {
                 if !isEnding { guard checkDialogueQuota() else { return } }
                 resumeCapture()
                 return

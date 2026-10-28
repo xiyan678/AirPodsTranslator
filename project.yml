@@ -1,6 +1,6 @@
 name: AirPodsTranslator
 options:
-  bundleIdPrefix: com.example
+  bundleIdPrefix: com.example  # 替换为你的 Bundle ID 前缀，例如 com.yourcompany
   postGenCommand: sed -i '' -e 's|dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";|dstPath = "";|' -e 's|dstSubfolderSpec = 16;|dstSubfolderSpec = 13;|' AirPodsTranslator.xcodeproj/project.pbxproj
   deploymentTarget:
     iOS: '26.0'

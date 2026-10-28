@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 替换 App Group ID 为你在 Apple Developer 创建的 App Group，必须与主 App 一致 -->
 <plist version="1.0"><dict>
   <key>com.apple.security.application-groups</key>
   <array><string>group.com.example.AirPodsTranslator.shared</string></array>
