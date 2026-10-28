@@ -296,6 +296,9 @@ struct HistoryView: View {
             }
             .searchable(text: $query)
             .navigationTitle("对话记录")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { EditButton() }
+            }
             .scrollContentBackground(.hidden)
             .background(StudioBackground().ignoresSafeArea())
             .alert("删除失败", isPresented: Binding(get: { storageError != nil },
