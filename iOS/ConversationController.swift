@@ -170,10 +170,13 @@ final class ConversationController: ObservableObject {
             .store(in: &observers)
         Timer.publish(every: 1, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.consumeUsage()
-                    self?.broadcastInbox.poll()
-                }
+                Task { @MainActor in self?.consumeUsage() }
+            }
+            .store(in: &observers)
+        // 屏幕音频每 0.5 秒一块，按 0.25 秒取，避免每块多等最多 1 秒。
+        Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.broadcastInbox.poll() }
             }
             .store(in: &observers)
         broadcastInbox.onActiveChange = { [weak self] active in
