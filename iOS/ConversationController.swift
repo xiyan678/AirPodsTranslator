@@ -281,6 +281,7 @@ final class ConversationController: ObservableObject {
             guard sessionID == activeSession else { return }
             capture.nearField = preferences.nearField
             capture.quality = preferences.processingMode == .quality
+            capture.liveSegmentation = mode == .listen
             configureCaptureCallbacks()
             try capture.start()
             transition(to: .listening)
@@ -518,6 +519,7 @@ final class ConversationController: ObservableObject {
                 return
             }
             configureCaptureCallbacks()
+            capture.liveSegmentation = true
             capture.startExternal()
             isBroadcastMode = true
             transition(to: .listening)
@@ -700,15 +702,22 @@ final class ConversationController: ObservableObject {
                 resumeCapture()
                 return
             }
-            if let tail = capture.takePendingSpeech() { pending.append(tail) }
-            capture.stop()
+            let output: AudioDestination = item.mine ? .speaker : destination
+            // 同传时译文只进耳机，麦克风继续收音，播报期间对方说的话不会丢。
+            // 外放或未连接耳机时译文会被麦克风录回去，仍按原逻辑先停止收音。
+            let keepListening = mode == .listen && output == .earphones &&
+                capture.isRecording && SpeechPlayer.headphonesConnected
+            if !keepListening {
+                if let tail = capture.takePendingSpeech() { pending.append(tail) }
+                capture.stop()
+                latestPartial = nil
+            }
             transition(to: .speaking)
-            latestPartial = nil
             clearLivePreview()
             await withCheckedContinuation { continuation in
                 let played = player.speak(translated, language: item.target,
                                           rate: preferences.speechRate,
-                                          destination: item.mine ? .speaker : destination) {
+                                          destination: output, keepInputActive: keepListening) {
                     continuation.resume()
                 }
                 if !played { errorMessage = "当前设备没有\(AppLanguage.name(item.target))语音，译文已显示" }

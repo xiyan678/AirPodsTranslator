@@ -322,6 +322,8 @@ final class AudioCapture: NSObject, ObservableObject {
     var onUtterance: (([Float]) -> Void)?
     var nearField = true
     var quality = false
+    /// 同声传译模式：短停顿即切句，单句上限 8 秒（高质量 12 秒）。对话模式保持整句。
+    var liveSegmentation = false
     private var engine: AVAudioEngine?
     private var samples: [Float] = []
     private var beganSpeaking = false
@@ -341,6 +343,11 @@ final class AudioCapture: NSObject, ObservableObject {
     private static let preRollSamples = 8_000            // 开口前保留 0.5 秒
     private static let trailingSilenceKept = 4_800       // 句尾保留 0.3 秒，避免模型在长静音上编造内容
     private static let noiseMargin: Float = 12           // 高于底噪 12 dB 才算语音
+    private static let liveMinimumSegment = 48_000       // 同传：一句至少 3 秒才允许按短停顿切句
+    private static let liveShortPause = 6_400            // 同传：0.4 秒停顿即切句
+    private static let liveCutSearchWindow = 24_000      // 同传：达到上限时在最近 1.5 秒内找切点
+    /// 当前句每帧的结束位置和音量，用于在连续讲话中找安静处切句。
+    private var frameLevels: [(end: Int, decibels: Float)] = []
 
     func startExternal() {
         guard !isRecording else { return }
@@ -356,6 +363,7 @@ final class AudioCapture: NSObject, ObservableObject {
         silentSampleCount = 0
         lastVoicedEnd = 0
         samplesSincePartial = 0
+        frameLevels = []
     }
 
     func feedExternal(_ chunk: [Float]) { append(chunk) }
@@ -460,20 +468,61 @@ final class AudioCapture: NSObject, ObservableObject {
             return
         }
         samplesSincePartial += frame.count
+        frameLevels.append((end: samples.count, decibels: db))
         let hasEnoughSpeech = voicedSampleCount >= Self.minimumVoicedSamples
         let silenceLimit = Int(Double(Self.sampleRate) * (quality ? 1.5 : 1.2))
-        let maximumSamples = Self.sampleRate * (quality ? 30 : 20)
+        let maximumSamples = liveSegmentation
+            ? Self.sampleRate * (quality ? 12 : 8)
+            : Self.sampleRate * (quality ? 30 : 20)
         let partialInterval = Int(Double(Self.sampleRate) * (quality ? 1.8 : 1.2))
-        if silentSampleCount > silenceLimit || samples.count >= maximumSamples {
+        // 同传模式：已说满 3 秒后，0.4 秒的换气停顿就切句，不必等 1.2 秒长停顿。
+        let shortPauseCut = liveSegmentation && samples.count >= Self.liveMinimumSegment &&
+            silentSampleCount >= Self.liveShortPause
+        if silentSampleCount > silenceLimit || shortPauseCut {
             // 一句结束。累计语音不足 0.2 秒视为噪声（拍手、碰撞），直接丢弃，不送识别。
             let utterance = hasEnoughSpeech ? trimmedUtterance() : nil
             samples = []
             resetUtterance()
             if let utterance { onUtterance?(utterance) }
+        } else if samples.count >= maximumSamples {
+            guard hasEnoughSpeech else {
+                samples = []
+                resetUtterance()
+                return
+            }
+            if liveSegmentation, let cut = quietestRecentCut() {
+                splitUtterance(at: cut)
+            } else {
+                let utterance = samples
+                samples = []
+                resetUtterance()
+                onUtterance?(utterance)
+            }
         } else if hasEnoughSpeech, samplesSincePartial >= partialInterval {
             samplesSincePartial = 0
             onPartial?(samples)
         }
+    }
+
+    /// 连续讲话达到单句上限时，在最近 1.5 秒内最安静的一帧处切开，尽量不把一个词切成两半。
+    private func quietestRecentCut() -> Int? {
+        let earliest = samples.count - Self.liveCutSearchWindow
+        let candidates = frameLevels.filter { $0.end >= max(earliest, Self.minimumVoicedSamples) && $0.end < samples.count }
+        return candidates.min { $0.decibels < $1.decibels }?.end
+    }
+
+    /// 发出切点之前的部分，切点之后的音频留作下一句的开头。
+    private func splitUtterance(at cut: Int) {
+        let utterance = Array(samples[..<cut])
+        let rest = Array(samples[cut...])
+        let restLevels = frameLevels.filter { $0.end > cut }.map { (end: $0.end - cut, decibels: $0.decibels) }
+        samples = rest
+        resetUtterance()
+        beganSpeaking = true
+        voicedSampleCount = rest.count
+        lastVoicedEnd = rest.count
+        frameLevels = restLevels
+        onUtterance?(utterance)
     }
 
     private static func decibels(_ rms: Float) -> Float {
@@ -489,9 +538,17 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     private var activeUtteranceID: ObjectIdentifier?
     override init() { super.init(); synthesizer.delegate = self }
 
+    /// 当前输出是否为耳机类设备（AirPods、蓝牙耳机、有线耳机）。
+    static var headphonesConnected: Bool {
+        let headphonePorts: Set<AVAudioSession.Port> = [.headphones, .bluetoothA2DP, .bluetoothLE, .bluetoothHFP]
+        return AVAudioSession.sharedInstance().currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
+    }
+
+    /// - Parameter keepInputActive: 为 true 时沿用录音中的 playAndRecord 会话，不切换音频类别，
+    ///   这样播报译文的同时麦克风继续收音。只应在输出到耳机时使用，外放会把译文录回去。
     @discardableResult
     func speak(_ text: String, language: String, rate: Float, destination: AudioDestination,
-               done: @escaping () -> Void) -> Bool {
+               keepInputActive: Bool = false, done: @escaping () -> Void) -> Bool {
         // 替换播放时保留完成回调，等最后一条语音结束才恢复收音。
         isPlaying = true
         activeUtteranceID = nil
@@ -505,6 +562,14 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
             return false
         }
         let session = AVAudioSession.sharedInstance()
+        if keepInputActive {
+            let utterance = AVSpeechUtterance(string: text)
+            utterance.voice = voice
+            utterance.rate = rate
+            activeUtteranceID = ObjectIdentifier(utterance)
+            synthesizer.speak(utterance)
+            return true
+        }
         do {
             if destination == .earphones {
                 // Playback follows the system's selected headphones / AirPods route.
