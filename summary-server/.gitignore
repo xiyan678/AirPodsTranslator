@@ -3,3 +3,5 @@
 !.env.example
 node_modules/
 *.log
+*.p8
+data/

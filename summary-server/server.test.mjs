@@ -1,18 +1,86 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes, generateKeyPairSync, verify } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createDeviceVerifier } from './device-check.mjs';
 import { createSummaryServer, parseOutline } from './server.mjs';
 
 const outline = { keyPoints: ['周五发布新版本'], questions: [], nextSteps: ['小王周四完成测试'] };
 const success = () => Response.json({ choices: [{ message: { content: JSON.stringify(outline) } }] });
 async function start(t, options = {}) {
-  const server = createSummaryServer({ ...options,
+  const server = createSummaryServer({ deviceVerifier: { configured: true, verify: async () => true }, ...options,
     env: { DASHSCOPE_API_KEY: 'test-key', ...options.env } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
   return 'http://127.0.0.1:' + server.address().port;
 }
 const send = (url, body, headers = {}) => fetch(url + '/v1/summary', {
-  method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body)
+  method: 'POST', headers: { 'content-type': 'application/json', 'x-device-token': randomBytes(32).toString('base64'), ...headers }, body: JSON.stringify(body)
+});
+
+test('anonymous, invalid and replayed device credentials never reach the model', async t => {
+  let calls = 0;
+  const invalid = randomBytes(32).toString('base64');
+  const url = await start(t, { deviceVerifier: { configured: true, verify: async token => token !== invalid },
+    fetchImpl: async () => { calls++; return success(); } });
+  assert.equal((await send(url, { transcript: 'anonymous' }, { 'x-device-token': '' })).status, 401);
+  assert.equal((await send(url, { transcript: 'invalid' }, { 'x-device-token': invalid })).status, 401);
+  const token = randomBytes(32).toString('base64');
+  const replies = await Promise.all([1, 2].map(() => send(url, { transcript: 'hello' }, { 'x-device-token': token })));
+  assert.deepEqual(replies.map(r => r.status).sort(), [200, 401]);
+  assert.equal(calls, 1);
+});
+
+test('unconfigured or unavailable device verification fails closed', async t => {
+  for (const verifier of [{ configured: false }, { configured: true, verify: async () => { throw new Error('private'); } }]) {
+    const url = await start(t, { deviceVerifier: verifier, fetchImpl: async () => assert.fail('model called') });
+    assert.equal((await send(url, { transcript: 'test' })).status, 503);
+  }
+});
+
+test('restart preserves daily quotas and consumed device tokens', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'summary-limits-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const options = { stateFile: join(directory, 'limits.json'), env: { REQUESTS_PER_DAY: '2' }, fetchImpl: async () => success() };
+  const first = await start(t, options);
+  const token = randomBytes(32).toString('base64');
+  assert.equal((await send(first, { transcript: 'first' }, { 'x-device-token': token })).status, 200);
+  const restarted = await start(t, options);
+  assert.equal((await send(restarted, { transcript: 'replayed' }, { 'x-device-token': token })).status, 401);
+  assert.equal((await send(restarted, { transcript: 'second' })).status, 200);
+  const third = await start(t, options);
+  assert.equal((await send(third, { transcript: 'over cap' })).status, 429);
+});
+
+test('anonymous attempts do not drain the shared model quota', async t => {
+  const url = await start(t, { env: { REQUESTS_PER_DAY: '1' }, fetchImpl: async () => success() });
+  assert.equal((await send(url, { transcript: 'anonymous' }, { 'x-device-token': '' })).status, 401);
+  assert.equal((await send(url, { transcript: 'valid user' })).status, 200);
+  assert.equal((await send(url, { transcript: 'over quota' })).status, 429);
+});
+
+test('DeviceCheck sends a valid ES256 JWT and no transcript to Apple', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'device-check-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const keyFile = join(directory, 'key.p8');
+  writeFileSync(keyFile, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  let calls = 0;
+  const validator = createDeviceVerifier({ DEVICECHECK_KEY_FILE: keyFile, APPLE_TEAM_ID: 'TESTTEAM', DEVICECHECK_KEY_ID: 'TESTKEY' },
+    async (url, request) => {
+      calls++;
+      assert.equal(url, 'https://api.devicecheck.apple.com/v1/validate_device_token');
+      const [header, payload, signature] = request.headers.authorization.slice(7).split('.');
+      assert.equal(JSON.parse(Buffer.from(header, 'base64url')).alg, 'ES256');
+      assert.equal(JSON.parse(Buffer.from(payload, 'base64url')).iss, 'TESTTEAM');
+      assert.ok(verify('sha256', Buffer.from(header + '.' + payload), { key: publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(signature, 'base64url')));
+      assert.deepEqual(Object.keys(JSON.parse(request.body)).sort(), ['device_token', 'timestamp', 'transaction_id']);
+      return new Response('', { status: 200 });
+    });
+  assert.equal(await validator.verify('test-token'), true);
+  assert.equal(calls, 1);
 });
 
 test('summarizes into three sections using only the server key and model', async t => {

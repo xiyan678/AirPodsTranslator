@@ -24,6 +24,8 @@ final class ConversationController: ObservableObject {
     @Published var textTranslation = ""
     @Published var textDetectedLanguage = ""
     @Published var textTargetLanguage = ""
+    @Published private(set) var deliveredDialogueTextID: UUID?
+    private(set) var deliveredDialogueText = ""
     @Published var isKeyboardInputFocused = false
     @Published var showPaywall = false
     @Published private(set) var isBroadcastMode = false
@@ -51,6 +53,8 @@ final class ConversationController: ObservableObject {
 
     let preferences = Preferences()
     let store = ConversationStore()
+    let summary = LiveSummary()
+    let pictureInPicture = SubtitlePictureInPicture()
     let whisper = WhisperService()
     let capture = AudioCapture()
     let watch = WatchBridge()
@@ -69,6 +73,9 @@ final class ConversationController: ObservableObject {
     private var imageRequestID: UUID?
     private var revisionID: UUID?
     private var waitingUtterance: PendingUtterance?
+    private var pausedUtterances: [PendingUtterance] = []
+    private var restoringUtterance: PendingUtterance?
+    private var languagePackResumeID: UUID?
     private var waitingImage: (text: String, source: String, target: String, requestID: UUID)?
     private var waitingText: (text: String, source: String, target: String, requestID: UUID)?
     private var waitingRevision: PendingRevision?
@@ -96,6 +103,7 @@ final class ConversationController: ObservableObject {
     private func transition(to next: ConversationPhase) {
         assert(phase.canTransition(to: next), "Unexpected conversation transition: \(phase) → \(next)")
         phase = next
+        pictureInPicture.setPaused(next == .paused || next == .idle)
     }
 
     init() {
@@ -146,6 +154,28 @@ final class ConversationController: ObservableObject {
             }
             .store(in: &observers)
         updateOutputRoute()
+        pictureInPicture.onError = { [weak self] in self?.errorMessage = $0 }
+        pictureInPicture.onPlaybackChange = { [weak self] playing in
+            guard let self, !self.isEnding, !self.hasEnded else { return }
+            if playing { Task { await self.start() } }
+            else { self.pause() }
+        }
+        $liveText.combineLatest($liveTranslation).sink { [weak self] text, translation in
+            guard let self else { return }
+            let last = self.lines.last
+            self.pictureInPicture.update(original: text.isEmpty ? last?.original ?? "" : text,
+                translation: text.isEmpty ? last?.translated ?? "" : translation)
+        }.store(in: &observers)
+        summary.onUpdate = { [weak self] outline, id, snapshot in
+            guard let self else { return }
+            do { try self.store.updateOutline(outline, id: id, lines: snapshot) }
+            catch { self.errorMessage = "总结保存失败：\(error.localizedDescription)" }
+        }
+        $lines.sink { [weak self] lines in
+            guard let self else { return }
+            self.summary.receive(lines, conversationID: self.conversationID)
+            self.pictureInPicture.update(original: lines.last?.original ?? "", translation: lines.last?.translated ?? "")
+        }.store(in: &observers)
         watch.onCommand = { [weak self] command in
             guard let self else { return }
             switch command {
@@ -201,7 +231,7 @@ final class ConversationController: ObservableObject {
             status = "正在自动识别语音…"
             pending.append(contentsOf: pausedSamples)
             pausedSamples = []
-            if !pending.isEmpty { Task { await drain() } }
+            if !pending.isEmpty || !pausedUtterances.isEmpty { Task { await drain() } }
             updateOutputRoute()
             watch.publish(running: true, latest: lines.last?.translated ?? "")
         } catch {
@@ -215,7 +245,11 @@ final class ConversationController: ObservableObject {
 
     func pause() {
         guard !isEnding else { return }
-        if let activeSamples { pausedSamples.append(activeSamples.samples) }
+        if let item = waitingUtterance ?? restoringUtterance {
+            pausedUtterances.append(item)
+        } else if let activeSamples { pausedSamples.append(activeSamples.samples) }
+        languagePackResumeID = nil
+        restoringUtterance = nil
         activeSamples = nil
         pausedSamples.append(contentsOf: pending)
         if let tail = capture.takePendingSpeech() { pausedSamples.append(tail) }
@@ -234,7 +268,9 @@ final class ConversationController: ObservableObject {
         forcedLanguage = nil
         clearLivePreview()
         transition(to: .paused)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if !pictureInPicture.enabled {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         status = "已暂停"
         updateOutputRoute()
         watch.publish(running: false, latest: lines.last?.translated ?? "")
@@ -248,7 +284,8 @@ final class ConversationController: ObservableObject {
 
     func end(save: Bool = false) {
         guard !isEnding else { return }
-        if sessionID == nil, !pausedSamples.isEmpty {
+        pictureInPicture.stop()
+        if sessionID == nil, !pausedSamples.isEmpty || !pausedUtterances.isEmpty {
             sessionID = UUID()
             transition(to: .preparing)
             transition(to: .listening)
@@ -264,7 +301,7 @@ final class ConversationController: ObservableObject {
         player.stop()
         status = "正在完成最后一句…"
         if draining { return }
-        if !pending.isEmpty {
+        if !pending.isEmpty || !pausedUtterances.isEmpty {
             Task { await drain() }
         } else {
             finishEndingIfReady()
@@ -272,7 +309,8 @@ final class ConversationController: ObservableObject {
     }
 
     private func finishEndingIfReady() {
-        guard isEnding, !draining, pending.isEmpty, waitingUtterance == nil else { return }
+        guard isEnding, !draining, pending.isEmpty, pausedUtterances.isEmpty,
+              waitingUtterance == nil, languagePackResumeID == nil else { return }
         let shouldSave = saveWhenEnded
         isEnding = false
         pause()
@@ -282,13 +320,14 @@ final class ConversationController: ObservableObject {
         guard shouldSave else { return }
         let snapshot = lines
         let recordID = conversationID
+        let savedOutline = summary.outline(for: recordID, lines: snapshot)
         guard !snapshot.isEmpty else {
             return
         }
         status = "正在保存到历史…"
         Task {
             do {
-                try await store.save(snapshot, id: recordID)
+                try await store.save(snapshot, id: recordID, outline: savedOutline)
                 if hasEnded, sessionID == nil { status = "已保存到历史" }
             } catch {
                 errorMessage = "保存对话失败：\(error.localizedDescription)"
@@ -302,7 +341,7 @@ final class ConversationController: ObservableObject {
         guard !snapshot.isEmpty else { status = "没有可保存的对话"; return }
         status = "正在保存到历史…"
         do {
-            try await store.save(snapshot, id: recordID)
+            try await store.save(snapshot, id: recordID, outline: summary.outline(for: recordID, lines: snapshot))
             status = "对话已保存"
         } catch {
             status = "保存失败"
@@ -314,6 +353,8 @@ final class ConversationController: ObservableObject {
         waitingRevision = nil
         textRequestID = nil
         textDialogueConversationID = nil
+        textOriginal = ""
+        textTranslation = ""
         lines = []
         clearLivePreview()
         status = "已清空"
@@ -434,17 +475,26 @@ final class ConversationController: ObservableObject {
     }
 
     private func drain() async {
-        guard !draining else { return }
+        guard !draining, languagePackResumeID == nil else { return }
         draining = true
         defer {
             draining = false
             finishEndingIfReady()
             if !isEnding, phase == .listening, !capture.isRecording { resumeCapture() }
         }
-        while !pending.isEmpty || latestPartial != nil {
+        while !pending.isEmpty || !pausedUtterances.isEmpty || latestPartial != nil {
             guard waitingUtterance == nil else { return }
+            guard let session = sessionID else { return }
             if isEnding, phase != .listening { transition(to: .listening) }
-            if !pending.isEmpty {
+            if !pausedUtterances.isEmpty {
+                let item = pausedUtterances.removeFirst()
+                let restored = PendingUtterance(text: item.text, source: item.source,
+                    target: item.target, mine: item.mine, sessionID: session)
+                restoringUtterance = restored
+                transition(to: .recognizing)
+                await translateAndPlay(restored)
+                if restoringUtterance?.sessionID == session { restoringUtterance = nil }
+            } else if !pending.isEmpty {
                 let samples = pending.removeFirst()
                 await process(samples)
             } else if let samples = latestPartial {
@@ -560,6 +610,7 @@ final class ConversationController: ObservableObject {
                                       original: item.text, translated: translated, isMine: item.mine)
             lines.append(line)
             activeSamples = nil
+            if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }
             watch.publish(running: isRunning, latest: translated)
             status = "检测到\(AppLanguage.name(item.source))"
             if !preferences.autoReadAloud || isBroadcastMode || isEnding {
@@ -592,6 +643,7 @@ final class ConversationController: ObservableObject {
                     resumeCapture()
                     return
                 }
+                if let tail = capture.takePendingSpeech() { pending.append(tail) }
                 capture.stop()
                 latestPartial = nil
                 waitingUtterance = item
@@ -640,6 +692,9 @@ final class ConversationController: ObservableObject {
         let image = waitingImage
         let text = waitingText
         let revision = waitingRevision
+        let resumeID = UUID()
+        languagePackResumeID = resumeID
+        restoringUtterance = utterance
         languagePackRequest = nil
         waitingUtterance = nil
         waitingImage = nil
@@ -647,6 +702,8 @@ final class ConversationController: ObservableObject {
         waitingRevision = nil
         Task {
             if let utterance { await translateAndPlay(utterance, allowDownload: false) }
+            guard languagePackResumeID == resumeID else { return }
+            restoringUtterance = nil
             if let image {
                 await translateImageText(image.text, from: image.source, to: image.target,
                                          requestID: image.requestID, allowDownload: false)
@@ -656,6 +713,8 @@ final class ConversationController: ObservableObject {
                                            requestID: text.requestID, allowDownload: false)
             }
             if let revision { await applyRevision(revision, allowDownload: false) }
+            guard languagePackResumeID == resumeID else { return }
+            languagePackResumeID = nil
             await drain()
             finishEndingIfReady()
         }
@@ -798,6 +857,8 @@ final class ConversationController: ObservableObject {
                                           original: text, translated: result,
                                           isMine: source == preferences.preferredLanguage)
                 lines.append(line)
+                deliveredDialogueText = text
+                deliveredDialogueTextID = requestID
                 watch.publish(running: isRunning, latest: result)
                 if !subscriptions.isPro { usage.recordDialogueLine() }
             }

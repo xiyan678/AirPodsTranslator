@@ -125,7 +125,7 @@ struct PaywallView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(24)
             }
-            .navigationTitle("耳译 Pro")
+            .navigationTitle("声译 Pro")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("恢复购买") { Task { await subscriptions.restore() } }

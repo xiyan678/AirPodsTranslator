@@ -18,7 +18,7 @@ targets:
     info:
       path: iOS/Info.plist
       properties:
-        CFBundleDisplayName: 耳译
+        CFBundleDisplayName: 声译
         EarYiSummaryServiceURL: "https://ai.duwang.win/v1/summary"
         NSMicrophoneUsageDescription: 用于识别面对面交谈的语音并翻译。
         NSCameraUsageDescription: 用于拍照识别文字并翻译。

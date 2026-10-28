@@ -7,7 +7,6 @@ struct CleanSessionView: View {
     @State private var showText = false
     @State private var showPhoto = false
     @State private var showSummary = false
-    @StateObject private var summary = LiveSummary()
     @State private var editingLine: TranscriptLine?
     @State private var keyboardMode = false
     @State private var draft = ""
@@ -83,9 +82,14 @@ struct CleanSessionView: View {
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showText) { TextTranslationView(preferences: preferences) }
             .sheet(isPresented: $showPhoto) { CameraTranslateView() }
-            .sheet(isPresented: $showSummary) { LiveSummaryView(summary: summary) }
+            .sheet(isPresented: $showSummary) { LiveSummaryView(summary: controller.summary) }
             .sheet(item: $editingLine) { line in ReviseLineView(line: line) }
             .onChange(of: inputFocused) { _, focused in controller.isKeyboardInputFocused = focused }
+            .onChange(of: controller.deliveredDialogueTextID) { _, _ in
+                if keyboardMode, controller.deliveredDialogueText == draft.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    draft = ""
+                }
+            }
             .onDisappear { controller.isKeyboardInputFocused = false }
             .task(id: keyboardMode) {
                 if keyboardMode {
@@ -116,11 +120,25 @@ struct CleanSessionView: View {
     private var topBar: some View {
         HStack {
             if mode == .listen {
+                if active || paused {
+                    Button { controller.pictureInPicture.start() } label: {
+                        Image(systemName: "pip.enter").font(.title3)
+                    }.accessibilityLabel("开启字幕画中画")
+                }
                 Spacer()
                 if active || paused {
                     liveSessionControls
                 } else {
                     Menu {
+                        Button("开启画中画", systemImage: "pip.enter") {
+                            Task {
+                                if !controller.isRunning { await controller.start() }
+                                if controller.isRunning { controller.pictureInPicture.start() }
+                            }
+                        }
+                        if !controller.lines.isEmpty {
+                            Button("AI 总结", systemImage: "sparkles") { showSummary = true }
+                        }
                         Button("文本翻译", systemImage: "text.bubble") { showText = true }
                         Button("图片翻译", systemImage: "photo") { showPhoto = true }
                     } label: {
@@ -349,12 +367,6 @@ struct CleanSessionView: View {
         sending = true
         Task {
             await controller.sendDialogueText(submitted)
-            if controller.errorMessage == nil, !controller.showPaywall,
-               controller.textOriginal == submitted,
-               (!controller.textTranslation.isEmpty || controller.languagePackRequest != nil),
-               draft.trimmingCharacters(in: .whitespacesAndNewlines) == submitted {
-                draft = ""
-            }
             sending = false
         }
     }

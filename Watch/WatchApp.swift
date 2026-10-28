@@ -12,7 +12,7 @@ struct TranslatorWatchApp: App {
 @MainActor
 final class WatchController: NSObject, ObservableObject, WCSessionDelegate {
     @Published var isRunning = false
-    @Published var latest = "打开 iPhone 上的耳译"
+    @Published var latest = "打开 iPhone 上的声译"
 
     override init() {
         super.init()
@@ -42,7 +42,7 @@ struct WatchView: View {
     @EnvironmentObject private var bridge: WatchController
     var body: some View {
         VStack(spacing: 10) {
-            Text("耳译").font(.headline)
+            Text("声译").font(.headline)
             Text(bridge.latest).font(.caption).lineLimit(4)
             Button(bridge.isRunning ? "暂停" : "继续") { bridge.command("toggle") }
                 .buttonStyle(.borderedProminent)

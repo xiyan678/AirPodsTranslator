@@ -31,6 +31,14 @@ chown www:www "$project_dir/.env"
 chmod 600 "$project_dir/.env"
 chmod 755 "$project_dir"
 chmod 644 "$project_dir/server.mjs"
+chmod 644 "$project_dir/device-check.mjs"
+if ! runuser -u www -- "$node_bin" -v >/dev/null 2>&1; then
+  echo 'www 无法执行 Node，请用 namei -l 检查各级目录的穿越权限。' >&2
+  exit 1
+fi
+mkdir -p "$project_dir/data"
+chown www:www "$project_dir/data"
+chmod 700 "$project_dir/data"
 cat > /etc/systemd/system/ear-yi-summary.service <<EOF
 [Unit]
 Description=EarYi Qwen summary API
@@ -49,6 +57,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+ReadWritePaths=$project_dir/data
 
 [Install]
 WantedBy=multi-user.target

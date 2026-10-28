@@ -3,6 +3,7 @@ import Foundation
 import Security
 import SwiftUI
 import UIKit
+import DeviceCheck
 
 enum SummaryProvider: String, CaseIterable, Identifiable {
     case qwen, glm, deepseek, openai, gemini
@@ -142,9 +143,10 @@ struct SummaryOutline: Codable, Equatable {
 }
 
 enum SummaryAPIError: LocalizedError {
-    case response, rejected(Int), empty, notConfigured
+    case response, rejected(Int), empty, notConfigured, deviceVerification
     var errorDescription: String? {
         switch self {
+        case .deviceVerification: "设备验证未完成，请在已签名的 iPhone App 中重试。"
         case .notConfigured: "默认总结服务尚未配置，请稍后重试或在设置中使用自己的模型 API。"
         case .response: "总结服务返回了无法读取的内容，请重试。"
         case .rejected(401), .rejected(403): "模型服务拒绝访问，请检查 API Key 和权限。"
@@ -215,9 +217,15 @@ enum DefaultSummaryAPI {
             var request = URLRequest(url: url, timeoutInterval: 60)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            guard DCDevice.current.isSupported else { throw SummaryAPIError.deviceVerification }
+            let deviceToken: Data
+            do { deviceToken = try await DCDevice.current.generateToken() }
+            catch { throw SummaryAPIError.deviceVerification }
+            request.setValue(deviceToken.base64EncodedString(), forHTTPHeaderField: "X-Device-Token")
             request.httpBody = try JSONEncoder().encode(Body(transcript: chunk, previousSummary: outline?.plainText))
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let response = response as? HTTPURLResponse else { throw SummaryAPIError.response }
+            if response.statusCode == 401 || response.statusCode == 403 { throw SummaryAPIError.deviceVerification }
             guard (200..<300).contains(response.statusCode) else { throw SummaryAPIError.rejected(response.statusCode) }
             guard let content = String(data: data, encoding: .utf8) else { throw SummaryAPIError.response }
             outline = try SummaryOutline.decode(content)
@@ -229,6 +237,7 @@ enum DefaultSummaryAPI {
 
 @MainActor
 final class LiveSummary: ObservableObject {
+    var onUpdate: ((SummaryOutline, UUID, [TranscriptLine]) -> Void)?
     @Published private(set) var outline: SummaryOutline?
     var text: String { outline?.plainText ?? "" }
     @Published private(set) var error: String?
@@ -264,7 +273,16 @@ final class LiveSummary: ObservableObject {
         if changed { revision = UUID() }
         if automatic { schedule() }
     }
-    func open() { summarizedLines = []; visible = true; if automatic { schedule(delay: 0, force: true) } }
+    func outline(for id: UUID, lines: [TranscriptLine]) -> SummaryOutline? {
+        guard conversationID == id, sameContent(lines, summarizedLines) else { return nil }
+        return outline
+    }
+    private func sameContent(_ left: [TranscriptLine], _ right: [TranscriptLine]) -> Bool {
+        left.count == right.count && zip(left, right).allSatisfy {
+            $0.id == $1.id && $0.original == $1.original && $0.translated == $1.translated
+        }
+    }
+    func open() { visible = true; if automatic { schedule(delay: 0) } }
     func close() { visible = false; cancel() }
     func refresh() { cancel(); summarizedLines = []; schedule(delay: 0, force: true) }
     private func cancel() {
@@ -307,6 +325,7 @@ final class LiveSummary: ObservableObject {
                 self.outline = result
                 self.summarizedRevision = snapshotRevision
                 self.summarizedLines = snapshot
+                if let id = self.conversationID { self.onUpdate?(result, id, snapshot) }
                 succeeded = true
             } catch {
                 guard self.generation == token, !Task.isCancelled else { return }

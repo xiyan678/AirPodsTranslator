@@ -9,6 +9,9 @@ struct RootView: View {
     @State private var selectedTab: MainTab = .listen
     var body: some View {
         page
+            .safeAreaInset(edge: .top, spacing: 0) {
+                SubtitlePictureInPicturePanel(manager: controller.pictureInPicture)
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !controller.isKeyboardInputFocused { bottomNavigation }
             }
@@ -280,6 +283,13 @@ struct HistoryView: View {
                                 Text(item.summary)
                                     .font(.headline)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                if let outline = item.outline {
+                                    Text(outline.plainText).textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    ShareLink(item: outline.plainText) {
+                                        Label("分享总结", systemImage: "square.and.arrow.up")
+                                    }
+                                }
                                 ForEach(item.lines) { TranscriptCard(line: $0, size: 22) }
                                 ShareLink(item: item.lines.map { $0.original + "\n" + $0.translated }.joined(separator: "\n\n")) {
                                     Label("导出对话", systemImage: "square.and.arrow.up")
@@ -384,7 +394,7 @@ struct SettingsView: View {
                 }
                 SummarySettingsSection()
                 Section("记录") { Toggle("自动保存对话", isOn: $preferences.saveAutomatically) }
-                Section("耳译 Pro") {
+                Section("声译 Pro") {
                     PremiumStatusCard(subscriptions: controller.subscriptions)
                     Button("查看月度与年度订阅") { controller.showPaywall = true }
                     Button("管理订阅") { showManageSubscriptions = true }

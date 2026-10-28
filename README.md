@@ -1,4 +1,4 @@
-# 耳译（AirPodsTranslator）
+# 声译（AirPodsTranslator）
 
 独立 iPhone 翻译 App 源码。适配 iOS 26+，使用 iPhone 麦克风、AirPods 输出、端侧 WhisperKit 语种识别与转写、Apple Translation、Foundation Models 摘要、Vision OCR、WatchConnectivity。首次使用需要下载语音模型；遇到尚未安装的翻译语言包时，App 会请求系统弹出下载许可。
 
@@ -39,3 +39,13 @@
 ## 隐私
 
 语音转写、文字翻译与图片识别优先在设备上处理。记录默认不保存，用户主动保存后写入 App 本地文档目录。不要在未取得交谈对象同意时录音或保存对话。
+
+## 本次更新
+
+- 名称“声译”，图标为翻译与喇叭双气泡；保留 Bundle ID、签名、历史文件与钥匙串标识。
+- 同传页可开启字幕画中画，显示最新原文和译文；浮窗的播放/暂停联动同传，结束同传关闭浮窗。不使用静音音轨保活。
+- 语言包恢复翻译期间结束会等待结果；暂停保留待翻译原文，继续后重新处理。
+- AI 三组要点随历史保存，结束后可从菜单再次打开；键盘翻译失败或下载语言包时保留输入。
+- 默认 AI 总结接口需要 Apple DeviceCheck；部署前按 summary-server/宝塔部署说明.md 配置签名团队对应密钥。旧 App 不兼容新版接口。
+
+验证：Windows 上可运行服务端 Node 测试及 Swift/YAML 静态解析；画中画、蓝牙音频、后台收音、语言包下载与签名设备校验需云端 Xcode 构建后在 iPhone 验证。

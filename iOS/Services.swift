@@ -33,19 +33,23 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    func save(_ lines: [TranscriptLine], id: UUID? = nil) async throws {
+    func save(_ lines: [TranscriptLine], id: UUID? = nil, outline: SummaryOutline? = nil) async throws {
         guard loadError == nil else { throw ConversationStoreError.unreadableHistory }
         guard !lines.isEmpty else { return }
         let lineIDs = lines.map(\.id)
-        if conversations.contains(where: { Self.sameContent($0.lines, lines) }) { return }
+        if let match = conversations.first(where: { Self.sameContent($0.lines, lines) && (id == nil || $0.id == id) }) {
+            if let outline { try updateOutline(outline, id: match.id, lines: lines) }
+            return
+        }
         var updated = conversations
         let recordID: UUID
         if let index = updated.firstIndex(where: { (id != nil && $0.id == id) || $0.lines.map(\.id) == lineIDs }) {
             recordID = updated[index].id
             updated[index].lines = lines
+            updated[index].outline = outline
         } else {
             let record = SavedConversation(id: id ?? UUID(), lines: lines,
-                                           summary: String((lines.first?.translated ?? "").prefix(200)))
+                                           summary: String((lines.first?.translated ?? "").prefix(200)), outline: outline)
             recordID = record.id
             updated.insert(record, at: 0)
         }
@@ -67,6 +71,16 @@ final class ConversationStore: ObservableObject {
             } catch { /* 正文已保存，摘要失败不影响记录。 */ }
             self.summaryRevisions[recordID] = nil
         }
+    }
+
+    func updateOutline(_ outline: SummaryOutline, id: UUID, lines: [TranscriptLine]) throws {
+        guard loadError == nil else { throw ConversationStoreError.unreadableHistory }
+        guard let index = conversations.firstIndex(where: { $0.id == id }),
+              Self.sameContent(conversations[index].lines, lines) else { return }
+        var updated = conversations
+        updated[index].outline = outline
+        try persist(updated)
+        conversations = updated
     }
 
     private static func sameContent(_ left: [TranscriptLine], _ right: [TranscriptLine]) -> Bool {

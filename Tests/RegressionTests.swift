@@ -56,6 +56,45 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(ConversationStore(directory: url).conversations.count, 2)
     }
 
+    func testStructuredSummarySurvivesReloadAndLateResultsCannotReviveDeletion() async throws {
+        let url = try directory()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ConversationStore(directory: url, summarize: { _ in "local" })
+        let id = UUID()
+        let lines = [line("Release Friday")]
+        let outline = SummaryOutline(keyPoints: ["周五发布"], questions: [], nextSteps: ["周四测试"])
+        try await store.save(lines, id: id)
+        try store.updateOutline(outline, id: id, lines: lines)
+        XCTAssertEqual(ConversationStore(directory: url).conversations.first?.outline, outline)
+        try store.delete([id])
+        try store.updateOutline(outline, id: id, lines: lines)
+        XCTAssertTrue(ConversationStore(directory: url).conversations.isEmpty)
+    }
+
+    func testOldHistoryWithoutStructuredSummaryRemainsReadable() throws {
+        let old = SavedConversation(lines: [line("old")], summary: "legacy")
+        let encoded = try JSONEncoder().encode(old)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        json.removeValue(forKey: "outline")
+        let restored = try JSONDecoder().decode(SavedConversation.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(restored.summary, "legacy")
+        XCTAssertNil(restored.outline)
+    }
+
+    func testSummaryForOldTextCannotOverwriteEditedConversation() async throws {
+        let url = try directory()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ConversationStore(directory: url, summarize: { _ in "local" })
+        let id = UUID()
+        let old = [line("Monday")]
+        try await store.save(old, id: id)
+        var edited = old
+        edited[0].original = "Friday"
+        try await store.save(edited, id: id)
+        try store.updateOutline(SummaryOutline(keyPoints: ["Monday"], questions: [], nextSteps: []), id: id, lines: old)
+        XCTAssertNil(ConversationStore(directory: url).conversations.first?.outline)
+    }
+
     func testEndingKeepsAShortUnfinishedAnswerOnlyOnce() {
         let capture = AudioCapture()
         capture.startExternal()

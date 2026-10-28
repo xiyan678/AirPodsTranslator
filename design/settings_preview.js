@@ -16,7 +16,7 @@ function settingsPreview(part) {
   ].join('');
   const more = [
     section('记录', row('自动保存对话', '<span class="settings-switch off"></span>'), true),
-    section('耳译 Pro',
+    section('声译 Pro',
       row('当前版本', '免费版') + row('查看月度与年度订阅', '›') +
       row('管理订阅', '›') + row('恢复购买', '›'), true),
     section('关于',

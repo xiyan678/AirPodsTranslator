@@ -60,6 +60,7 @@ struct SavedConversation: Identifiable, Codable {
     var date = Date()
     var lines: [TranscriptLine]
     var summary: String
+    var outline: SummaryOutline? = nil
 }
 
 struct Term: Identifiable, Codable {
