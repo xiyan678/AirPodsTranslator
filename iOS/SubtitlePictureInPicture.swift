@@ -36,7 +36,7 @@ final class SubtitlePictureInPicture: NSObject, ObservableObject {
         startTimeout?.cancel()
         startTimeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(10))
-            guard !Task.isCancelled, let self, self.wantsStart else { return }
+            guard !Task.isCancelled, let self, self.enabled, !self.active else { return }
             self.stop()
             self.onError?("画中画暂时无法启动，请保持同传运行后重试。")
         }
@@ -108,7 +108,6 @@ final class SubtitlePictureInPicture: NSObject, ObservableObject {
         guard wantsStart, let controller, controller.isPictureInPicturePossible,
               !controller.isPictureInPictureActive else { return }
         wantsStart = false
-        startTimeout?.cancel()
         controller.startPictureInPicture()
     }
 
@@ -171,6 +170,8 @@ extension SubtitlePictureInPicture: AVPictureInPictureControllerDelegate {
         Task { @MainActor in
             guard self.controller === pictureInPictureController else { return }
             self.active = true
+            self.startTimeout?.cancel()
+            self.startTimeout = nil
         }
     }
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {

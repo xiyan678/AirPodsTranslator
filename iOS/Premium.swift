@@ -62,8 +62,8 @@ final class UsageMeter: ObservableObject {
 
     init() { refreshDay() }
 
-    var remainingLiveSeconds: Int { max(0, Self.freeLiveSeconds - liveSeconds) }
-    var remainingDialogueLines: Int { max(0, Self.freeDialogueLines - dialogueLines) }
+    var remainingLiveSeconds: Int { refreshDay(); return max(0, Self.freeLiveSeconds - liveSeconds) }
+    var remainingDialogueLines: Int { refreshDay(); return max(0, Self.freeDialogueLines - dialogueLines) }
 
     func track(active: Bool) {
         refreshDay()

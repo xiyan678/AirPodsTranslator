@@ -399,8 +399,9 @@ final class ConversationController: ObservableObject {
         status = "正在保存到历史…"
         do {
             try await store.save(snapshot, id: recordID, outline: summary.outline(for: recordID, lines: snapshot))
-            status = "对话已保存"
+            if conversationID == recordID { status = "对话已保存" }
         } catch {
+            guard conversationID == recordID else { return }
             status = "保存失败"
             errorMessage = error.localizedDescription
         }
