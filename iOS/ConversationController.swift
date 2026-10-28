@@ -199,8 +199,13 @@ final class ConversationController: ObservableObject {
             }
             .store(in: &observers)
         NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
-            .sink { [weak self] _ in
-                Task { @MainActor in self?.updateOutputRoute() }
+            .sink { [weak self] notification in
+                let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue
+                let deviceRemoved = reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue
+                Task { @MainActor in
+                    self?.updateOutputRoute()
+                    if deviceRemoved { self?.handleHeadphonesRemoved() }
+                }
             }
             .store(in: &observers)
         updateOutputRoute()
@@ -338,6 +343,15 @@ final class ConversationController: ObservableObject {
         status = "已暂停"
         updateOutputRoute()
         watch.publish(running: false, latest: lines.last?.translated ?? "")
+    }
+
+    /// AirPods 摘下或断开后，同传译文会改从手机播出并被麦克风录回去，
+    /// 按系统音频 App 的惯例暂停，由用户确认后再继续。
+    private func handleHeadphonesRemoved() {
+        guard mode == .listen, destination == .earphones, !isBroadcastMode, !isEnding,
+              isRunning, !SpeechPlayer.headphonesConnected else { return }
+        pause()
+        status = "耳机已断开，同传已暂停"
     }
 
     private func handleAudioInterruption() {
@@ -994,8 +1008,11 @@ final class ConversationController: ObservableObject {
                 latestPartial = nil
                 clearLivePreview()
             }
+            // 面对面对话里，自己输入的话是给对方听的，应和语音输入一样走手机扬声器。
+            let mine = textRequestIsDialogue && source == preferences.preferredLanguage
+            let output: AudioDestination = textRequestIsDialogue ? (mine ? .speaker : destination) : .earphones
             let played = player.speak(result, language: target, rate: preferences.speechRate,
-                                      destination: .earphones) { [weak self] in
+                                      destination: output) { [weak self] in
                 guard let self, shouldResumeCapture, self.sessionID == activeSession,
                       !self.draining else { return }
                 if self.pending.isEmpty { self.resumeCapture() }
