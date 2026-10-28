@@ -344,7 +344,7 @@ struct CleanSessionView: View {
                     .background(.white, in: RoundedRectangle(cornerRadius: 20))
                 Button(action: sendText) {
                     Group {
-                        if sending { ProgressView().tint(.white) }
+                        if sending || controller.languagePackRequest != nil { ProgressView().tint(.white) }
                         else { Image(systemName: "arrow.up").font(.title2.weight(.semibold)) }
                     }
                     .foregroundStyle(.white)

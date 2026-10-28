@@ -90,6 +90,15 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(Set(store.conversations.map(\.id)), Set([first, second]))
     }
 
+    func testWhisperSoundCaptionsAreNotTreatedAsSpokenSentences() {
+        for caption in ["(snoring)", "[XBOX SOUND]", "[XBOX SOUND] [Music]", "（打鼾）", "【音乐】", "[BLANK_AUDIO]"] {
+            XCTAssertNil(RecognizedSpeechText.cleaned(caption), caption)
+        }
+        for spoken in ["Hello", "请说 Xbox", "[Music] hello", "I said (hello)"] {
+            XCTAssertEqual(RecognizedSpeechText.cleaned(spoken), spoken)
+        }
+    }
+
     func testBodyIsPersistedBeforeSummaryFinishes() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }

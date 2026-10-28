@@ -102,11 +102,7 @@ private enum LanguagePreparationError: LocalizedError {
 
 private func prepareLanguagePack(_ session: TranslationSession) async throws {
     try await session.prepareTranslation()
-    let deadline = Date().addingTimeInterval(30 * 60)
-    while !(await session.isReady) {
-        guard Date() < deadline else { throw LanguagePreparationError.timedOut }
-        try await Task.sleep(for: .seconds(1))
-    }
+
 }
 
 struct ReviseLineView: View {

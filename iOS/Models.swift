@@ -107,6 +107,10 @@ enum RecognizedSpeechText {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .joined()
         guard !ignoredMarkers.contains(marker) else { return nil }
+        // Whisper can emit caption annotations for non-speech sounds. Only reject
+        // complete annotation-only results, preserving spoken text around them.
+        let annotationPattern = #"^(?:\s*[\[（(【][^\]）)】]*[\]）)】]\s*[.,，。!?！？]*\s*)+$"#
+        if text.range(of: annotationPattern, options: .regularExpression) != nil { return nil }
         return text
     }
 }
