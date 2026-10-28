@@ -13,6 +13,8 @@
 
 仓库根目录的 `codemagic.yaml` 提供 `ios-simulator` 工作流：安装 XcodeGen、生成项目、用 Xcode 26.6 无签名编译 iOS 模拟器版本，并输出 `AirPodsTranslator-simulator.zip`。此构建用于发现编译错误；模拟器包不能安装到 iPhone。生成可安装的 IPA 还需 Apple Developer 签名证书、主 App 与广播扩展的 App Group 配置，以及对应的描述文件。
 
+`ios-device-test` 是单独的 Ad Hoc 真机测试工作流，对应 `project-device-test.yml`。它使用 `app.eggplant1907.jet4469` 作为测试版 Bundle ID；构建前须在 Codemagic 的 Code signing identities 中上传匹配的 Apple Distribution 证书（含私钥的 `.p12` 和密码）及含测试 iPhone 的 Ad Hoc 描述文件。测试工程不打包广播扩展和 Watch App，因此屏幕广播入口在此版本中隐藏，其余主 App 功能可用于首轮真机测试。证书、密码和描述文件不要提交到 Git 仓库。构建产物在 `build/ios/ipa/*.ipa`。
+
 ## App 内订阅
 
 在 App Store Connect 的同一个自动续订订阅群组中创建两个商品：`<主 App Bundle ID>.pro.monthly` 和 `<主 App Bundle ID>.pro.yearly`。中国区价格分别配置为 ¥68/月和 ¥498/年；其他地区的价格由 App Store Connect 设置，App 会显示商店的实际价格。完成付费协议、税务、银行资料和订阅所需的隐私政策及条款信息后，用 StoreKit 沙盒账号验证购买、续订、过期与恢复购买。
