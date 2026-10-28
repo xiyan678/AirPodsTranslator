@@ -262,6 +262,7 @@ final class AudioCapture: NSObject, ObservableObject {
     private var engine: AVAudioEngine?
     private var samples: [Float] = []
     private var beganSpeaking = false
+    private var voicedSampleCount = 0
     private var silenceSince: Date?
     private var startedAt = Date()
     private var lastPartial = Date()
@@ -271,6 +272,7 @@ final class AudioCapture: NSObject, ObservableObject {
         isRecording = true
         samples = []
         beganSpeaking = false
+        voicedSampleCount = 0
         silenceSince = nil
     }
 
@@ -324,6 +326,7 @@ final class AudioCapture: NSObject, ObservableObject {
         level = 0
         samples = []
         beganSpeaking = false
+        voicedSampleCount = 0
         silenceSince = nil
     }
 
@@ -338,6 +341,7 @@ final class AudioCapture: NSObject, ObservableObject {
         if audible {
             if !beganSpeaking { startedAt = now; lastPartial = now }
             beganSpeaking = true
+            voicedSampleCount += chunk.count
             silenceSince = nil
         } else if beganSpeaking && silenceSince == nil {
             silenceSince = now
@@ -347,14 +351,23 @@ final class AudioCapture: NSObject, ObservableObject {
             return
         }
         let silence = silenceSince.map { now.timeIntervalSince($0) } ?? 0
-        let finished = (now.timeIntervalSince(startedAt) > 0.6 && silence > (quality ? 0.9 : 0.55))
-            || samples.count >= 16_000 * (quality ? 15 : 10)
-        if finished {
+        let minimumVoicedSamples = Int(16_000.0 * (quality ? 0.5 : 0.4))
+        let hasEnoughSpeech = voicedSampleCount >= minimumVoicedSamples
+        let silenceLimit = quality ? 1.5 : 1.2
+        let maximumSamples = 16_000 * (quality ? 30 : 20)
+        let reachedBoundary = silence > silenceLimit || samples.count >= maximumSamples
+        if reachedBoundary && hasEnoughSpeech {
             let utterance = samples
             samples = []
             beganSpeaking = false
+            voicedSampleCount = 0
             silenceSince = nil
             onUtterance?(utterance)
+        } else if reachedBoundary {
+            samples = []
+            beganSpeaking = false
+            voicedSampleCount = 0
+            silenceSince = nil
         } else if now.timeIntervalSince(lastPartial) >= (quality ? 1.8 : 1.2) {
             lastPartial = now
             onPartial?(samples)

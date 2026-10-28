@@ -22,6 +22,7 @@ targets:
         NSMicrophoneUsageDescription: 用于识别面对面交谈的语音并翻译。
         NSCameraUsageDescription: 用于拍照识别文字并翻译。
         NSPhotoLibraryUsageDescription: 用于选择照片识别其中的文字。
+        LSApplicationQueriesSchemes: [snssdk1128]
         UIBackgroundModes: [audio]
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]

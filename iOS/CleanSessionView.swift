@@ -190,10 +190,10 @@ struct CleanSessionView: View {
             HStack(spacing: 34) {
                 VStack(spacing: 7) {
                     Button {
-                        if active { controller.pause() }
+                        if active { controller.end(save: true) }
                         else { Task { await controller.start() } }
                     } label: {
-                        Image(systemName: active ? "pause.fill" : "mic.fill")
+                        Image(systemName: active ? "stop.fill" : "mic.fill")
                             .font(.system(size: 36, weight: .medium))
                             .foregroundStyle(.white)
                             .frame(width: 94, height: 94)
@@ -201,7 +201,7 @@ struct CleanSessionView: View {
                     }
                     .disabled(controller.isPreparing || controller.isBroadcastMode ||
                               (controller.phase == .replaying && !controller.isRunning))
-                    Text(controller.isBroadcastMode ? "屏幕音频中" : active ? "暂停" : "麦克风")
+                    Text(controller.isBroadcastMode ? "屏幕音频中" : active ? "停止" : "麦克风")
                 }
                 #if !EAR_YI_DEVICE_TEST
                 VStack(spacing: 7) {
@@ -265,7 +265,7 @@ struct CleanSessionView: View {
             Button("保存") { Task { await controller.saveCurrent() } }
             Spacer()
             if !controller.isBroadcastMode {
-                Button("结束") { controller.end() }
+                Button("结束") { controller.end(save: true) }
             }
         }
         .font(.footnote.weight(.semibold))

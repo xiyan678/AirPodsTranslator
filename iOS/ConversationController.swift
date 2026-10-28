@@ -137,7 +137,7 @@ final class ConversationController: ObservableObject {
             guard let self else { return }
             switch command {
             case "toggle": Task {
-                if self.isRunning { self.pause() }
+                if self.isRunning { self.end(save: true) }
                 else { await self.start() }
             }
             case "replay": self.replay()
@@ -219,13 +219,21 @@ final class ConversationController: ObservableObject {
         status = "录音被系统打断，请点开始继续"
     }
 
-    func end() {
+    func end(save: Bool = false) {
         pause()
-        if preferences.saveAutomatically {
-            let snapshot = lines
-            Task {
-                do { try await store.save(snapshot) }
-                catch { errorMessage = "保存对话失败：\(error.localizedDescription)" }
+        guard save || preferences.saveAutomatically else { return }
+        let snapshot = lines
+        guard !snapshot.isEmpty else {
+            if save { status = "已结束" }
+            return
+        }
+        if save { status = "正在保存到历史…" }
+        Task {
+            do {
+                try await store.save(snapshot)
+                if save, sessionID == nil { status = "已保存到历史" }
+            } catch {
+                errorMessage = "保存对话失败：\(error.localizedDescription)"
             }
         }
     }
@@ -413,8 +421,7 @@ final class ConversationController: ObservableObject {
                                                     target: target, mine: mine, sessionID: activeSession))
         } catch {
             guard sessionID == activeSession else { return }
-            errorMessage = error.localizedDescription
-            status = "语音识别未完成"
+            status = "没听清，继续倾听…"
             transition(to: .listening)
         }
     }
@@ -470,8 +477,7 @@ final class ConversationController: ObservableObject {
                 requestLanguagePack(from: source, to: target)
                 return
             }
-            errorMessage = error.localizedDescription
-            status = "翻译未完成"
+            status = "这句话没有翻译成功，请再说一次"
             resumeCapture()
         }
     }
@@ -610,7 +616,9 @@ final class ConversationController: ObservableObject {
         if selectedSource == "auto" {
             let detector = NLLanguageRecognizer()
             detector.processString(trimmed)
-            source = AppLanguage.normalizedCode(detector.dominantLanguage?.rawValue ?? "")
+            let detected = AppLanguage.normalizedCode(detector.dominantLanguage?.rawValue ?? "")
+            source = AppLanguage.all.contains(where: { $0.code == detected })
+                ? detected : fallbackTextLanguage(for: trimmed, target: target)
         } else {
             source = selectedSource
         }
@@ -630,6 +638,22 @@ final class ConversationController: ObservableObject {
                                                         mode: preferences.processingMode, terms: preferences.terms)
             guard textRequestID == requestID else { return }
             textTranslation = result
+            guard preferences.autoReadAloud else { return }
+            let shouldResumeCapture = isRunning && capture.isRecording
+            let activeSession = sessionID
+            if shouldResumeCapture {
+                capture.stop()
+                latestPartial = nil
+                liveText = ""
+            }
+            let played = player.speak(result, language: target, rate: preferences.speechRate,
+                                      destination: destination) { [weak self] in
+                guard let self, shouldResumeCapture, self.sessionID == activeSession else { return }
+                self.resumeCapture()
+            }
+            if !played {
+                status = "当前设备没有\(AppLanguage.name(target))语音，译文已显示"
+            }
         } catch {
             guard textRequestID == requestID else { return }
             if let reason = error as? TranslatorError,
@@ -644,6 +668,21 @@ final class ConversationController: ObservableObject {
             }
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func fallbackTextLanguage(for text: String, target: String) -> String {
+        let scalars = text.unicodeScalars
+        let containsHan = scalars.contains {
+            (0x3400...0x4DBF).contains($0.value) ||
+            (0x4E00...0x9FFF).contains($0.value) ||
+            (0xF900...0xFAFF).contains($0.value)
+        }
+        if containsHan { return "zh" }
+        let containsLatin = scalars.contains {
+            (0x0041...0x005A).contains($0.value) || (0x0061...0x007A).contains($0.value)
+        }
+        if containsLatin && target != "en" { return "en" }
+        return ""
     }
 
     func translateImage(_ data: Data) async {

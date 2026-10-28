@@ -2,6 +2,7 @@ import PhotosUI
 import StoreKit
 import SwiftUI
 import Translation
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var controller: ConversationController
@@ -364,7 +365,12 @@ struct SettingsView: View {
                     }
                 }
                 Section("关于") {
-                    Link(destination: AppLegal.authorProfileURL) {
+                    Button {
+                        let application = UIApplication.shared
+                        let url = application.canOpenURL(AppLegal.authorAppURL)
+                            ? AppLegal.authorAppURL : AppLegal.authorProfileURL
+                        application.open(url)
+                    } label: {
                         Label("联系作者（抖音）", systemImage: "bubble.left.and.bubble.right")
                     }
                     NavigationLink("使用条款") { LegalPageView(document: AppLegal.terms) }
