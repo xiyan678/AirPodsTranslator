@@ -986,7 +986,7 @@ final class ConversationController: ObservableObject {
                 clearLivePreview()
             }
             let played = player.speak(result, language: target, rate: preferences.speechRate,
-                                      destination: .speaker) { [weak self] in
+                                      destination: .earphones) { [weak self] in
                 guard let self, shouldResumeCapture, self.sessionID == activeSession,
                       !self.draining else { return }
                 if self.pending.isEmpty { self.resumeCapture() }

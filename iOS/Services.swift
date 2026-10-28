@@ -466,15 +466,20 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
         }
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .default,
-                                    options: [.allowBluetoothA2DP, .defaultToSpeaker])
+            if destination == .earphones {
+                // Playback follows the system's selected headphones / AirPods route.
+                try session.setCategory(.playback, mode: .spokenAudio, options: [])
+            } else {
+                try session.setCategory(.playAndRecord, mode: .default,
+                                        options: [.allowBluetoothA2DP, .defaultToSpeaker])
+            }
             try session.setActive(true)
         } catch {
             finish()
             return false
         }
         do {
-            try session.overrideOutputAudioPort(destination == .speaker ? .speaker : .none)
+            if destination == .speaker { try session.overrideOutputAudioPort(.speaker) }
         } catch {
             finish()
             return false

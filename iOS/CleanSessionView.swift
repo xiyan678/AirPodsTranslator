@@ -45,7 +45,7 @@ struct CleanSessionView: View {
                                                 }
                                                 .id(line.id)
                                         } else if keyboardMode {
-                                            DialogueTextBubble(line: line) { controller.replay(line, output: .speaker) }
+                                            DialogueTextBubble(line: line) { controller.replay(line, output: .earphones) }
                                                 .id(line.id)
                                         } else {
                                             TranscriptCard(line: line, size: preferences.fontSize,
