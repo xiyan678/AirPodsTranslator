@@ -11,7 +11,9 @@ struct LanguagePackRequest: Identifiable {
 
 @MainActor
 final class ConversationController: ObservableObject {
-    @Published var mode: ConversationMode = .listen
+    @Published private(set) var mode: ConversationMode = .listen
+    @Published var dialogueKeyboardDraft = ""
+    @Published var dialogueKeyboardEnabled = false
     @Published var lines: [TranscriptLine] = []
     @Published var status = "准备就绪"
     @Published var errorMessage: String?
@@ -53,7 +55,9 @@ final class ConversationController: ObservableObject {
 
     let preferences = Preferences()
     let store = ConversationStore()
-    let summary = LiveSummary()
+    private let liveSummary = LiveSummary()
+    private let dialogueSummary = LiveSummary()
+    var summary: LiveSummary { mode == .listen ? liveSummary : dialogueSummary }
     let pictureInPicture = SubtitlePictureInPicture()
     let whisper = WhisperService()
     let capture = AudioCapture()
@@ -98,6 +102,48 @@ final class ConversationController: ObservableObject {
         let target: String
         let mine: Bool
         let sessionID: UUID
+    }
+
+    private struct ModeSession {
+        var id = UUID()
+        var lines: [TranscriptLine] = []
+        var phase: ConversationPhase = .idle
+        var hasEnded = false
+        var samples: [[Float]] = []
+        var utterances: [PendingUtterance] = []
+    }
+    private var modeSessions: [ConversationMode: ModeSession] = [:]
+
+    @discardableResult
+    func selectMode(_ selected: ConversationMode) -> Bool {
+        guard selected != mode else { return true }
+        guard !isEnding else { return false }
+        let oldPhase: ConversationPhase = phase == .idle ? .idle : .paused
+        summary.close()
+        pictureInPicture.stop()
+        pause()
+        modeSessions[mode] = ModeSession(id: conversationID, lines: lines, phase: oldPhase,
+            hasEnded: hasEnded, samples: pausedSamples, utterances: pausedUtterances)
+        // In-flight translations from the previous page must not append or play later.
+        textRequestID = nil
+        textDialogueConversationID = nil
+        imageRequestID = nil
+        imageIsProcessing = false
+        revisionID = nil
+        errorMessage = nil
+        isKeyboardInputFocused = false
+        textOriginal = ""
+        textTranslation = ""
+        let restored = modeSessions[selected] ?? ModeSession()
+        mode = selected
+        conversationID = restored.id
+        hasEnded = restored.hasEnded
+        pausedSamples = restored.samples
+        pausedUtterances = restored.utterances
+        phase = restored.phase
+        lines = restored.lines
+        status = hasEnded ? "已结束" : phase == .paused ? "已暂停" : "准备就绪"
+        return true
     }
 
     private func transition(to next: ConversationPhase) {
@@ -166,10 +212,12 @@ final class ConversationController: ObservableObject {
             self.pictureInPicture.update(original: text.isEmpty ? last?.original ?? "" : text,
                 translation: text.isEmpty ? last?.translated ?? "" : translation)
         }.store(in: &observers)
-        summary.onUpdate = { [weak self] outline, id, snapshot in
-            guard let self else { return }
-            do { try self.store.updateOutline(outline, id: id, lines: snapshot) }
-            catch { self.errorMessage = "总结保存失败：\(error.localizedDescription)" }
+        for summary in [liveSummary, dialogueSummary] {
+            summary.onUpdate = { [weak self] outline, id, snapshot in
+                guard let self else { return }
+                do { try self.store.updateOutline(outline, id: id, lines: snapshot) }
+                catch { self.errorMessage = "总结保存失败：\(error.localizedDescription)" }
+            }
         }
         $lines.sink { [weak self] lines in
             guard let self else { return }
@@ -310,7 +358,7 @@ final class ConversationController: ObservableObject {
 
     private func finishEndingIfReady() {
         guard isEnding, !draining, pending.isEmpty, pausedUtterances.isEmpty,
-              waitingUtterance == nil, languagePackResumeID == nil else { return }
+              waitingUtterance == nil, waitingText == nil, languagePackResumeID == nil else { return }
         let shouldSave = saveWhenEnded
         isEnding = false
         pause()
@@ -360,7 +408,7 @@ final class ConversationController: ObservableObject {
         status = "已清空"
     }
 
-    func replay(_ selectedLine: TranscriptLine? = nil) {
+    func replay(_ selectedLine: TranscriptLine? = nil, output: AudioDestination? = nil) {
         guard !isEnding else { return }
         guard let line = selectedLine ?? lines.last else { return }
         guard !draining, pending.isEmpty, waitingUtterance == nil,
@@ -376,7 +424,7 @@ final class ConversationController: ObservableObject {
             latestPartial = nil
             clearLivePreview()
         }
-        let output: AudioDestination = line.isMine ? .speaker : destination
+        let output: AudioDestination = output ?? (line.isMine ? .speaker : destination)
         let played = player.speak(line.translated, language: line.targetLanguage,
                                   rate: preferences.speechRate, destination: output) { [weak self] in
             guard let self else { return }
@@ -400,7 +448,7 @@ final class ConversationController: ObservableObject {
     func beginDialogue(in language: String) async {
         guard !isEnding else { return }
         if isRunning { pause() }
-        mode = .dialogue
+        guard selectMode(.dialogue) else { return }
         forcedLanguage = language
         await start()
     }
@@ -597,14 +645,15 @@ final class ConversationController: ObservableObject {
         }
     }
 
-    private func translateAndPlay(_ item: PendingUtterance, allowDownload: Bool = true) async {
+    private func translateAndPlay(_ item: PendingUtterance, allowDownload: Bool = true,
+                                  preparedSession: TranslationSession? = nil) async {
         guard sessionID == item.sessionID else { return }
         do {
             transition(to: .translating)
             status = "正在翻译 \(AppLanguage.name(item.source))…"
             let translated = try await translator.translate(item.text, from: item.source,
                                                              to: item.target, mode: preferences.processingMode,
-                                                             terms: preferences.terms)
+                                                             terms: preferences.terms, preparedSession: preparedSession)
             guard sessionID == item.sessionID else { return }
             let line = TranscriptLine(sourceLanguage: item.source, targetLanguage: item.target,
                                       original: item.text, translated: translated, isMine: item.mine)
@@ -679,14 +728,14 @@ final class ConversationController: ObservableObject {
     }
 
     private func requestLanguagePack(from source: String, to target: String) {
-        status = "需要下载\(AppLanguage.name(source)) → \(AppLanguage.name(target))语言包"
+        status = "正在准备\(AppLanguage.name(source)) → \(AppLanguage.name(target))翻译"
         let configuration = TranslationConfigurationFactory.make(
             source: source, target: target, mode: preferences.processingMode
         )
         languagePackRequest = LanguagePackRequest(configuration: configuration)
     }
 
-    func languagePackReady(for requestID: UUID) {
+    func languagePackReady(for requestID: UUID, session: TranslationSession) async {
         guard languagePackRequest?.id == requestID else { return }
         let utterance = waitingUtterance
         let image = waitingImage
@@ -695,29 +744,27 @@ final class ConversationController: ObservableObject {
         let resumeID = UUID()
         languagePackResumeID = resumeID
         restoringUtterance = utterance
-        languagePackRequest = nil
         waitingUtterance = nil
         waitingImage = nil
         waitingText = nil
         waitingRevision = nil
-        Task {
-            if let utterance { await translateAndPlay(utterance, allowDownload: false) }
-            guard languagePackResumeID == resumeID else { return }
-            restoringUtterance = nil
-            if let image {
-                await translateImageText(image.text, from: image.source, to: image.target,
-                                         requestID: image.requestID, allowDownload: false)
-            }
-            if let text {
-                await translateTextContent(text.text, from: text.source, to: text.target,
-                                           requestID: text.requestID, allowDownload: false)
-            }
-            if let revision { await applyRevision(revision, allowDownload: false) }
-            guard languagePackResumeID == resumeID else { return }
-            languagePackResumeID = nil
-            await drain()
-            finishEndingIfReady()
+        if let utterance { await translateAndPlay(utterance, allowDownload: false, preparedSession: session) }
+        guard languagePackResumeID == resumeID else { return }
+        restoringUtterance = nil
+        if let image {
+            await translateImageText(image.text, from: image.source, to: image.target,
+                                     requestID: image.requestID, allowDownload: false, preparedSession: session)
         }
+        if let text {
+            await translateTextContent(text.text, from: text.source, to: text.target,
+                                       requestID: text.requestID, allowDownload: false, preparedSession: session)
+        }
+        if let revision { await applyRevision(revision, allowDownload: false, preparedSession: session) }
+        guard languagePackResumeID == resumeID else { return }
+        languagePackRequest = nil
+        languagePackResumeID = nil
+        await drain()
+        finishEndingIfReady()
     }
 
     func languagePackFailed(_ error: Error, for requestID: UUID) {
@@ -751,13 +798,14 @@ final class ConversationController: ObservableObject {
                                             target: target, revisionID: token))
     }
 
-    private func applyRevision(_ revision: PendingRevision, allowDownload: Bool = true) async {
+    private func applyRevision(_ revision: PendingRevision, allowDownload: Bool = true,
+                               preparedSession: TranslationSession? = nil) async {
         guard revisionID == revision.revisionID, lines.last?.id == revision.lineID else { return }
         do {
             status = "正在重新翻译上一句…"
             let result = try await translator.translate(revision.text, from: revision.source,
                                                         to: revision.target, mode: preferences.processingMode,
-                                                        terms: preferences.terms)
+                                                        terms: preferences.terms, preparedSession: preparedSession)
             guard revisionID == revision.revisionID, lines.last?.id == revision.lineID else { return }
             guard let index = lines.indices.last else { return }
             lines[index].original = revision.text
@@ -790,6 +838,7 @@ final class ConversationController: ObservableObject {
     }
 
     func sendDialogueText(_ text: String) async {
+        guard selectMode(.dialogue) else { return }
         await translateText(text, from: "auto", to: preferences.preferredLanguage, inDialogue: true)
     }
 
@@ -840,15 +889,17 @@ final class ConversationController: ObservableObject {
         let resolvedTarget = inDialogue && source == preferences.preferredLanguage
             ? lastOtherLanguage : target
         textTargetLanguage = resolvedTarget
-        await translateTextContent(trimmed, from: source, to: resolvedTarget, requestID: requestID)
+        waitingText = (trimmed, source, resolvedTarget, requestID)
+        requestLanguagePack(from: source, to: resolvedTarget)
     }
 
     private func translateTextContent(_ text: String, from source: String, to target: String,
-                                      requestID: UUID, allowDownload: Bool = true) async {
+                                      requestID: UUID, allowDownload: Bool = true,
+                                      preparedSession: TranslationSession? = nil) async {
         guard textRequestID == requestID else { return }
         do {
             let result = try await translator.translate(text, from: source, to: target,
-                                                        mode: preferences.processingMode, terms: preferences.terms)
+                                                        mode: preferences.processingMode, terms: preferences.terms, preparedSession: preparedSession)
             guard textRequestID == requestID else { return }
             textTranslation = result
             if textRequestIsDialogue {
@@ -873,7 +924,7 @@ final class ConversationController: ObservableObject {
                 clearLivePreview()
             }
             let played = player.speak(result, language: target, rate: preferences.speechRate,
-                                      destination: textRequestIsDialogue && source == preferences.preferredLanguage ? .speaker : destination) { [weak self] in
+                                      destination: .speaker) { [weak self] in
                 guard let self, shouldResumeCapture, self.sessionID == activeSession,
                       !self.draining else { return }
                 if self.pending.isEmpty { self.resumeCapture() }
@@ -941,12 +992,12 @@ final class ConversationController: ObservableObject {
 
     private func translateImageText(_ text: String, from source: String, to target: String,
                                     requestID: UUID,
-                                    allowDownload: Bool = true) async {
+                                    allowDownload: Bool = true, preparedSession: TranslationSession? = nil) async {
         guard imageRequestID == requestID else { return }
         do {
             let translation = try await translator.translate(text, from: source, to: target,
                                                               mode: preferences.processingMode,
-                                                              terms: preferences.terms)
+                                                              terms: preferences.terms, preparedSession: preparedSession)
             guard imageRequestID == requestID else { return }
             imageTranslation = translation
         } catch {

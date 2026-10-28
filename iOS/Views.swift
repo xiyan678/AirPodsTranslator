@@ -28,7 +28,7 @@ struct RootView: View {
                 guard let request = controller.languagePackRequest else { return }
                 do {
                     try await prepareLanguagePack(session)
-                    controller.languagePackReady(for: request.id)
+                    await controller.languagePackReady(for: request.id, session: session)
                 } catch {
                     controller.languagePackFailed(error, for: request.id)
                 }
@@ -48,6 +48,8 @@ struct RootView: View {
         HStack(spacing: 3) {
             ForEach(MainTab.allCases) { tab in
                 Button {
+                    if tab == .listen, !controller.selectMode(.listen) { return }
+                    if tab == .dialogue, !controller.selectMode(.dialogue) { return }
                     selectedTab = tab
                 } label: {
                     VStack(spacing: 4) {
@@ -298,7 +300,7 @@ struct HistoryView: View {
                         }.navigationTitle(item.date.formatted(date: .abbreviated, time: .shortened))
                     } label: {
                         VStack(alignment: .leading) {
-                            Text(item.date, style: .date).font(.headline)
+                            Text(item.date.formatted(.dateTime.year().month().day().locale(Locale(identifier: "zh_CN")))).font(.headline)
                             Text(item.summary).lineLimit(2).foregroundStyle(.secondary)
                         }
                     }
@@ -312,9 +314,15 @@ struct HistoryView: View {
             .searchable(text: $query)
             .navigationTitle("对话记录")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { EditButton() }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if !filtered.isEmpty {
+                        Button(editMode.isEditing ? "完成" : "编辑") {
+                            editMode = editMode.isEditing ? .inactive : .active
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarLeading) {
-                    if store.canUndoDelete {
+                    if store.canUndoDelete && !store.conversations.isEmpty {
                         Button("撤销删除") {
                             do { try store.undoDelete() }
                             catch { storageError = error.localizedDescription }
@@ -338,6 +346,7 @@ struct HistoryView: View {
             .onChange(of: query) { _, _ in selection = [] }
             .onChange(of: store.conversations.map(\.id)) { _, ids in
                 selection.formIntersection(Set(ids))
+                if ids.isEmpty { editMode = .inactive }
             }
             .scrollContentBackground(.hidden)
             .background(StudioBackground().ignoresSafeArea())

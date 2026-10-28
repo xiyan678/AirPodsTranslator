@@ -14,6 +14,25 @@ final class RegressionTests: XCTestCase {
         return url
     }
 
+    func testDialogueAndLiveSessionsStaySeparateAcrossTabChanges() {
+        let controller = ConversationController()
+        let liveID = controller.currentConversationID
+        controller.lines = [line("live speech")]
+        XCTAssertTrue(controller.selectMode(.dialogue))
+        XCTAssertTrue(controller.lines.isEmpty)
+        let dialogueID = controller.currentConversationID
+        XCTAssertNotEqual(liveID, dialogueID)
+        controller.lines = [line("keyboard text")]
+        controller.dialogueKeyboardDraft = "unfinished"
+        XCTAssertTrue(controller.selectMode(.listen))
+        XCTAssertEqual(controller.lines.map(\.original), ["live speech"])
+        XCTAssertEqual(controller.currentConversationID, liveID)
+        XCTAssertTrue(controller.selectMode(.dialogue))
+        XCTAssertEqual(controller.lines.map(\.original), ["keyboard text"])
+        XCTAssertEqual(controller.currentConversationID, dialogueID)
+        XCTAssertEqual(controller.dialogueKeyboardDraft, "unfinished")
+    }
+
     func testBodyIsPersistedBeforeSummaryFinishes() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }

@@ -253,34 +253,38 @@ final class LocalTranslator {
     private var translatedTerms: [String: String] = [:]
 
     func translate(_ text: String, from source: String, to target: String,
-                   mode: ProcessingMode, terms: [Term]) async throws -> String {
+                   mode: ProcessingMode, terms: [Term], preparedSession: TranslationSession? = nil) async throws -> String {
         if source == target { return text }
         if let exact = terms.first(where: { $0.source.localizedCaseInsensitiveCompare(text) == .orderedSame }) {
             return exact.replacement
         }
-        let sourceLanguage = Locale.Language(identifier: source)
-        let targetLanguage = Locale.Language(identifier: target)
-        let availability: LanguageAvailability
-        if #available(iOS 26.4, *) {
-            let strategy: TranslationSession.Strategy = mode == .quality ? .highFidelity : .lowLatency
-            availability = LanguageAvailability(preferredStrategy: strategy)
-        } else {
-            availability = LanguageAvailability()
-        }
-        let status = await availability.status(from: sourceLanguage, to: targetLanguage)
-        switch status {
-        case .installed: break
-        case .supported: throw TranslatorError.languagePackRequired(source, target)
-        case .unsupported: throw TranslatorError.unsupportedPair
-        @unknown default: throw TranslatorError.unsupportedPair
-        }
         let session: TranslationSession
-        if #available(iOS 26.4, *) {
-            let strategy: TranslationSession.Strategy = mode == .quality ? .highFidelity : .lowLatency
-            session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage,
-                                         preferredStrategy: strategy)
+        if let preparedSession {
+            session = preparedSession
         } else {
-            session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage)
+            let sourceLanguage = Locale.Language(identifier: source)
+            let targetLanguage = Locale.Language(identifier: target)
+            let availability: LanguageAvailability
+            if #available(iOS 26.4, *) {
+                let strategy: TranslationSession.Strategy = mode == .quality ? .highFidelity : .lowLatency
+                availability = LanguageAvailability(preferredStrategy: strategy)
+            } else {
+                availability = LanguageAvailability()
+            }
+            let status = await availability.status(from: sourceLanguage, to: targetLanguage)
+            switch status {
+            case .installed: break
+            case .supported: throw TranslatorError.languagePackRequired(source, target)
+            case .unsupported: throw TranslatorError.unsupportedPair
+            @unknown default: throw TranslatorError.unsupportedPair
+            }
+            if #available(iOS 26.4, *) {
+                let strategy: TranslationSession.Strategy = mode == .quality ? .highFidelity : .lowLatency
+                session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage,
+                                             preferredStrategy: strategy)
+            } else {
+                session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage)
+            }
         }
         let response = try await session.translate(text)
         var translated = response.targetText
@@ -469,10 +473,11 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
             finish()
             return false
         }
-        if destination == .speaker {
-            try? session.overrideOutputAudioPort(.speaker)
-        } else {
-            try? session.overrideOutputAudioPort(.none)
+        do {
+            try session.overrideOutputAudioPort(destination == .speaker ? .speaker : .none)
+        } catch {
+            finish()
+            return false
         }
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice

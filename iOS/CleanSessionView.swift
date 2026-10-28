@@ -8,8 +8,8 @@ struct CleanSessionView: View {
     @State private var showPhoto = false
     @State private var showSummary = false
     @State private var editingLine: TranscriptLine?
-    @State private var keyboardMode = false
-    @State private var draft = ""
+    private var keyboardMode: Bool { mode == .dialogue && controller.dialogueKeyboardEnabled }
+    private var draft: String { controller.dialogueKeyboardDraft }
     @State private var sending = false
     @FocusState private var inputFocused: Bool
 
@@ -45,7 +45,7 @@ struct CleanSessionView: View {
                                                 }
                                                 .id(line.id)
                                         } else if keyboardMode {
-                                            DialogueTextBubble(line: line) { controller.replay(line) }
+                                            DialogueTextBubble(line: line) { controller.replay(line, output: .speaker) }
                                                 .id(line.id)
                                         } else {
                                             TranscriptCard(line: line, size: preferences.fontSize,
@@ -87,7 +87,7 @@ struct CleanSessionView: View {
             .onChange(of: inputFocused) { _, focused in controller.isKeyboardInputFocused = focused }
             .onChange(of: controller.deliveredDialogueTextID) { _, _ in
                 if keyboardMode, controller.deliveredDialogueText == draft.trimmingCharacters(in: .whitespacesAndNewlines) {
-                    draft = ""
+                    controller.dialogueKeyboardDraft = ""
                 }
             }
             .onDisappear { controller.isKeyboardInputFocused = false }
@@ -99,8 +99,7 @@ struct CleanSessionView: View {
             }
             .onAppear {
                 if controller.mode != mode {
-                    if controller.isRunning || controller.isPreparing { controller.pause() }
-                    controller.mode = mode
+                    controller.selectMode(mode)
                 }
                 if controller.lastOtherLanguage == preferences.preferredLanguage {
                     controller.lastOtherLanguage = preferences.preferredLanguage == "en" ? "zh" : "en"
@@ -159,7 +158,7 @@ struct CleanSessionView: View {
                                        otherLanguage: $controller.lastOtherLanguage)
                 Button {
                     if !keyboardMode && (controller.isRunning || controller.isPreparing) { controller.pause() }
-                    keyboardMode.toggle()
+                    controller.dialogueKeyboardEnabled.toggle()
                     if !keyboardMode { inputFocused = false }
                 } label: {
                     Label(keyboardMode ? "语音" : "键盘", systemImage: keyboardMode ? "mic.fill" : "keyboard")
@@ -243,9 +242,9 @@ struct CleanSessionView: View {
                     VStack(spacing: 7) {
                         Button { Task { await controller.start() } } label: {
                             Image(systemName: "mic.fill")
-                                .font(.system(size: 36, weight: .medium))
+                                .font(.system(size: 28, weight: .medium))
                                 .foregroundStyle(.white)
-                                .frame(width: 94, height: 94)
+                                .frame(width: 72, height: 72)
                                 .background(StudioStyle.blue, in: Circle())
                         }
                         .disabled(controller.isPreparing || controller.isBroadcastMode ||
@@ -255,7 +254,7 @@ struct CleanSessionView: View {
                 #if !EAR_YI_DEVICE_TEST
                     VStack(spacing: 7) {
                         ScreenBroadcastControl()
-                            .frame(width: 94, height: 94)
+                            .frame(width: 72, height: 72)
                             .background(StudioStyle.violet, in: Circle())
                         Text("屏幕广播")
                     }
@@ -278,7 +277,7 @@ struct CleanSessionView: View {
             #endif
         }
         .disabled(controller.isEnding)
-        .padding(.horizontal, 20).padding(.top, 15).padding(.bottom, 9)
+        .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 28)
         .background(Color.clear)
     }
 
@@ -337,7 +336,7 @@ struct CleanSessionView: View {
             Text("自动识别输入语言")
                 .font(.footnote).foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                TextField("输入文字，自动识别语言", text: $draft)
+                TextField("输入文字，自动识别语言", text: $controller.dialogueKeyboardDraft)
                     .focused($inputFocused)
                     .submitLabel(.send)
                     .onSubmit { sendText() }
