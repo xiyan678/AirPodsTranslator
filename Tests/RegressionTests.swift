@@ -99,6 +99,26 @@ final class RegressionTests: XCTestCase {
         }
     }
 
+    func testStalledTextRequestCanExpireAndBeResent() async {
+        let controller = ConversationController()
+        controller.selectMode(.dialogue)
+        controller.preferences.preferredLanguage = "zh"
+        controller.lastOtherLanguage = "en"
+        controller.dialogueKeyboardDraft = "你好"
+        await controller.sendDialogueText("你好")
+        guard let first = controller.languagePackRequest else { return XCTFail("Expected request") }
+        controller.expireTextRequest(first.id)
+        XCTAssertNil(controller.languagePackRequest)
+        XCTAssertEqual(controller.dialogueKeyboardDraft, "你好")
+        await controller.sendDialogueText("你好")
+        let second = controller.languagePackRequest?.id
+        XCTAssertNotNil(second)
+        XCTAssertNotEqual(second, first.id)
+        controller.expireTextRequest(first.id)
+        XCTAssertEqual(controller.languagePackRequest?.id, second)
+        controller.clearCurrent()
+    }
+
     func testBodyIsPersistedBeforeSummaryFinishes() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }

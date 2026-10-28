@@ -24,13 +24,13 @@ struct RootView: View {
                                                set: { if !$0 { controller.errorMessage = nil } })) {
                 Button("知道了") { controller.errorMessage = nil }
             } message: { Text(controller.errorMessage ?? "") }
-            .translationTask(controller.languagePackRequest?.configuration) { session in
-                guard let request = controller.languagePackRequest else { return }
-                do {
-                    try await prepareLanguagePack(session)
-                    await controller.languagePackReady(for: request.id, session: session)
-                } catch {
-                    controller.languagePackFailed(error, for: request.id)
+            .overlay(alignment: .topLeading) {
+                if let request = controller.languagePackRequest {
+                    TranslationRequestHost(request: request)
+                        .id(request.id)
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
             }
     }
@@ -71,6 +71,21 @@ struct RootView: View {
         .background(.white, in: Capsule())
         .overlay(Capsule().strokeBorder(Color.gray.opacity(0.18)))
         .padding(.horizontal, 20).padding(.bottom, 8)
+    }
+}
+
+private struct TranslationRequestHost: View {
+    @EnvironmentObject private var controller: ConversationController
+    let request: LanguagePackRequest
+    var body: some View {
+        Color.clear.translationTask(request.configuration) { session in
+            do {
+                try await prepareLanguagePack(session)
+                await controller.languagePackReady(for: request.id, session: session)
+            } catch {
+                controller.languagePackFailed(error, for: request.id)
+            }
+        }
     }
 }
 
@@ -416,9 +431,14 @@ struct SettingsView: View {
                 Section("关于") {
                     Button {
                         let application = UIApplication.shared
-                        let url = application.canOpenURL(AppLegal.authorAppURL)
-                            ? AppLegal.authorAppURL : AppLegal.authorProfileURL
-                        application.open(url)
+                        application.open(AppLegal.authorProfileURL,
+                                         options: [.universalLinksOnly: true]) { opened in
+                            if !opened {
+                                Task { @MainActor in
+                                    application.open(AppLegal.authorProfileURL)
+                                }
+                            }
+                        }
                     } label: {
                         Label("联系作者（抖音）", systemImage: "bubble.left.and.bubble.right")
                     }

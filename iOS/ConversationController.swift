@@ -81,6 +81,7 @@ final class ConversationController: ObservableObject {
     private var pausedUtterances: [PendingUtterance] = []
     private var restoringUtterance: PendingUtterance?
     private var languagePackResumeID: UUID?
+    private var textRequestTimeout: Task<Void, Never>?
     private var waitingImage: (text: String, source: String, target: String, requestID: UUID)?
     private var waitingText: (text: String, source: String, target: String, requestID: UUID)?
     private var waitingRevision: PendingRevision?
@@ -126,6 +127,8 @@ final class ConversationController: ObservableObject {
         modeSessions[mode] = ModeSession(id: conversationID, lines: lines, phase: oldPhase,
             hasEnded: hasEnded, samples: pausedSamples, utterances: pausedUtterances)
         // In-flight translations from the previous page must not append or play later.
+        textRequestTimeout?.cancel()
+        textRequestTimeout = nil
         textRequestID = nil
         textDialogueConversationID = nil
         imageRequestID = nil
@@ -302,6 +305,8 @@ final class ConversationController: ObservableObject {
             pausedUtterances.append(item)
         } else if let activeSamples { pausedSamples.append(activeSamples.samples) }
         languagePackResumeID = nil
+        textRequestTimeout?.cancel()
+        textRequestTimeout = nil
         textRequestID = nil
         imageRequestID = nil
         revisionID = nil
@@ -416,6 +421,8 @@ final class ConversationController: ObservableObject {
         hasEnded = false
         revisionID = nil
         waitingRevision = nil
+        textRequestTimeout?.cancel()
+        textRequestTimeout = nil
         textRequestID = nil
         textDialogueConversationID = nil
         textOriginal = ""
@@ -924,6 +931,26 @@ final class ConversationController: ObservableObject {
         }
         waitingText = (trimmed, source, resolvedTarget, requestID)
         requestLanguagePack(from: source, to: resolvedTarget)
+        if let preparation = languagePackRequest {
+            textRequestTimeout?.cancel()
+            textRequestTimeout = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(90)) }
+                catch { return }
+                self?.expireTextRequest(preparation.id)
+            }
+        }
+    }
+
+    func expireTextRequest(_ preparationID: UUID) {
+        guard languagePackRequest?.id == preparationID, textRequestID != nil else { return }
+        textRequestID = nil
+        textRequestTimeout?.cancel()
+        textRequestTimeout = nil
+        languagePackRequest = nil
+        waitingText = nil
+        languagePackResumeID = nil
+        errorMessage = "翻译等待超时，文字已保留，请重新发送。"
+        finishEndingIfReady()
     }
 
     private func translateTextContent(_ text: String, from source: String, to target: String,
@@ -934,6 +961,8 @@ final class ConversationController: ObservableObject {
             let result = try await translator.translate(text, from: source, to: target,
                                                         mode: preferences.processingMode, terms: preferences.terms, preparedSession: preparedSession)
             guard textRequestID == requestID else { return }
+            textRequestTimeout?.cancel()
+            textRequestTimeout = nil
             textTranslation = result
             if textRequestIsDialogue {
                 guard textDialogueConversationID == conversationID, !hasEnded else { return }
