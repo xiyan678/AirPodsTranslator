@@ -111,6 +111,31 @@ final class SubtitlePictureInPicture: NSObject, ObservableObject {
         controller.startPictureInPicture()
     }
 
+    /// 字幕放不下时保留最新的内容。原来按尾部截断，长句只显示开头，
+    /// 正在说的部分反而被省略号盖掉。
+    private static func latestPart(of text: String, fitting size: CGSize,
+                                   attributes: [NSAttributedString.Key: Any]) -> String {
+        // 截断模式下测出来只有一行高，测量时改用自动换行。
+        var measuring = attributes
+        if let style = (attributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle {
+            style.lineBreakMode = .byWordWrapping
+            measuring[.paragraphStyle] = style
+        }
+        func fits(_ value: String) -> Bool {
+            let height = (value as NSString).boundingRect(with: CGSize(width: size.width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin], attributes: measuring, context: nil).height
+            return height <= size.height
+        }
+        guard !fits(text) else { return text }
+        let characters = Array(text)
+        var low = 1, high = characters.count  // 从第 low 个字符起保留，找到能放下的最小起点
+        while low < high {
+            let middle = (low + high) / 2
+            if fits("…" + String(characters[middle...])) { high = middle } else { low = middle + 1 }
+        }
+        return low < characters.count ? "…" + String(characters[low...]) : ""
+    }
+
     private func render() {
         guard let layer else { return }
         if layer.status == .failed { layer.flush() }
@@ -126,8 +151,10 @@ final class SubtitlePictureInPicture: NSObject, ObservableObject {
             paragraph.lineBreakMode = .byTruncatingTail
             paragraph.lineSpacing = 9
             func draw(_ text: String, rect: CGRect, size: CGFloat, color: UIColor) {
-                (text as NSString).draw(in: rect, withAttributes: [.font: UIFont.systemFont(ofSize: size, weight: .medium),
-                    .foregroundColor: color, .paragraphStyle: paragraph])
+                let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: size, weight: .medium),
+                    .foregroundColor: color, .paragraphStyle: paragraph]
+                (Self.latestPart(of: text, fitting: rect.size, attributes: attributes) as NSString)
+                    .draw(in: rect, withAttributes: attributes)
             }
             draw(pausedState.withLock { $0 } ? "声译 · 已暂停" : "声译 · 实时翻译",
                  rect: CGRect(x: 40, y: 28, width: 880, height: 38), size: 25, color: .lightGray)
