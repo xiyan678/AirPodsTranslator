@@ -25,9 +25,13 @@ struct CleanSessionView: View {
                 VStack(spacing: 0) {
                     topBar
                     if controller.lines.isEmpty && controller.liveText.isEmpty {
-                        Spacer(minLength: 25)
-                        emptyState
-                        Spacer(minLength: 25)
+                        if keyboardMode {
+                            Spacer(minLength: 0)
+                        } else {
+                            Spacer(minLength: 25)
+                            emptyState
+                            Spacer(minLength: 25)
+                        }
                     } else {
                         ScrollViewReader { scroll in
                             ScrollView {
@@ -75,8 +79,10 @@ struct CleanSessionView: View {
                     }
                     if mode == .listen {
                         if !active && !paused { liveControls }
-                    } else if keyboardMode { keyboardControls }
-                    else { dialogueControls }
+                    } else {
+                        if keyboardMode { keyboardControls }
+                        dialogueControls
+                    }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -161,7 +167,7 @@ struct CleanSessionView: View {
                     controller.dialogueKeyboardEnabled.toggle()
                     if !keyboardMode { inputFocused = false }
                 } label: {
-                    Label(keyboardMode ? "语音" : "键盘", systemImage: keyboardMode ? "mic.fill" : "keyboard")
+                    Label(keyboardMode ? "收起键盘" : "键盘", systemImage: keyboardMode ? "keyboard.chevron.compact.down" : "keyboard")
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 15).frame(height: 42)
                         .background(.white, in: Capsule())
@@ -373,6 +379,9 @@ struct CleanSessionView: View {
     private func dialogueButton(_ language: String, tint: Color) -> some View {
         let selected = controller.activeDialogueLanguage == language
         return Button {
+            inputFocused = false
+            controller.isKeyboardInputFocused = false
+            controller.dialogueKeyboardEnabled = false
             if selected { controller.pause() }
             else { Task { await controller.beginDialogue(in: language) } }
         } label: {
