@@ -376,7 +376,7 @@ final class ConversationController: ObservableObject {
         Task {
             do {
                 try await store.save(snapshot, id: recordID, outline: savedOutline)
-                if hasEnded, sessionID == nil { status = "已保存到历史" }
+                if conversationID == recordID, hasEnded, sessionID == nil { status = "已保存到历史" }
             } catch {
                 errorMessage = "保存对话失败：\(error.localizedDescription)"
             }
@@ -525,14 +525,18 @@ final class ConversationController: ObservableObject {
     private func drain() async {
         guard !draining, languagePackResumeID == nil else { return }
         draining = true
+        let drainSession = sessionID
         defer {
             draining = false
             finishEndingIfReady()
             if !isEnding, phase == .listening, !capture.isRecording { resumeCapture() }
         }
         while !pending.isEmpty || !pausedUtterances.isEmpty || latestPartial != nil {
-            guard waitingUtterance == nil else { return }
-            guard let session = sessionID else { return }
+            guard waitingUtterance == nil, languagePackResumeID == nil else { return }
+            guard let session = sessionID, session == drainSession else {
+                if sessionID != nil { Task { await self.drain() } }
+                return
+            }
             if isEnding, phase != .listening { transition(to: .listening) }
             if !pausedUtterances.isEmpty {
                 let item = pausedUtterances.removeFirst()
@@ -889,6 +893,10 @@ final class ConversationController: ObservableObject {
         let resolvedTarget = inDialogue && source == preferences.preferredLanguage
             ? lastOtherLanguage : target
         textTargetLanguage = resolvedTarget
+        if source == resolvedTarget {
+            await translateTextContent(trimmed, from: source, to: resolvedTarget, requestID: requestID)
+            return
+        }
         waitingText = (trimmed, source, resolvedTarget, requestID)
         requestLanguagePack(from: source, to: resolvedTarget)
     }
@@ -903,7 +911,7 @@ final class ConversationController: ObservableObject {
             guard textRequestID == requestID else { return }
             textTranslation = result
             if textRequestIsDialogue {
-                guard textDialogueConversationID == conversationID, !hasEnded, !isEnding else { return }
+                guard textDialogueConversationID == conversationID, !hasEnded else { return }
                 let line = TranscriptLine(sourceLanguage: source, targetLanguage: target,
                                           original: text, translated: result,
                                           isMine: source == preferences.preferredLanguage)

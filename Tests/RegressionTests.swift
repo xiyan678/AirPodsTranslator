@@ -33,6 +33,19 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(controller.dialogueKeyboardDraft, "unfinished")
     }
 
+    func testClearingDialogueDoesNotClearLiveSession() {
+        let controller = ConversationController()
+        controller.lines = [line("live")]
+        controller.selectMode(.dialogue)
+        controller.lines = [line("dialogue")]
+        controller.clearCurrent()
+        XCTAssertTrue(controller.lines.isEmpty)
+        controller.selectMode(.listen)
+        XCTAssertEqual(controller.lines.map(\.original), ["live"])
+        controller.selectMode(.dialogue)
+        XCTAssertTrue(controller.lines.isEmpty)
+    }
+
     func testBodyIsPersistedBeforeSummaryFinishes() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }

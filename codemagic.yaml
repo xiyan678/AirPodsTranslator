@@ -63,3 +63,28 @@ workflows:
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
+
+  ios-regression:
+    name: iOS automated regression tests
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: 26.6
+    scripts:
+      - name: Generate regression test project
+        script: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate --spec project-regression.yml
+      - name: Run XCTest on an available iPhone simulator
+        script: |
+          set -euo pipefail
+          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for group in d["devices"].values() for x in group if x["name"].startswith("iPhone")))')
+          xcodebuild -project AirPodsTranslatorRegression.xcodeproj \
+            -scheme AirPodsTranslatorRegression \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -resultBundlePath build/Regression.xcresult \
+            CODE_SIGNING_ALLOWED=NO test
+    artifacts:
+      - build/Regression.xcresult
