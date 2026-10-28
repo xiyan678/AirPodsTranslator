@@ -377,7 +377,7 @@ final class ConversationController: ObservableObject {
         do {
             let recognized = try await whisper.recognize(samples, language: recognitionLanguage)
             if sessionID == activeSession && pending.isEmpty && waitingUtterance == nil {
-                liveText = recognized.text
+                liveText = RecognizedSpeechText.cleaned(recognized.text) ?? ""
             }
         } catch { }
     }
@@ -390,7 +390,10 @@ final class ConversationController: ObservableObject {
             let recognized = try await whisper.recognize(samples, language: selectedLanguage)
             guard sessionID == activeSession else { return }
             liveText = ""
-            guard !recognized.text.isEmpty else { transition(to: .listening); return }
+            guard let recognizedText = RecognizedSpeechText.cleaned(recognized.text) else {
+                transition(to: .listening)
+                return
+            }
             let source = selectedLanguage ?? AppLanguage.normalizedCode(recognized.language)
             correctionLanguage = nil
             guard AppLanguage.all.contains(where: { $0.code == source }) else {
@@ -406,7 +409,7 @@ final class ConversationController: ObservableObject {
             }
             let target = mine ? lastOtherLanguage : preferences.preferredLanguage
             guard source != target else { transition(to: .listening); return }
-            await translateAndPlay(PendingUtterance(text: recognized.text, source: source,
+            await translateAndPlay(PendingUtterance(text: recognizedText, source: source,
                                                     target: target, mine: mine, sessionID: activeSession))
         } catch {
             guard sessionID == activeSession else { return }

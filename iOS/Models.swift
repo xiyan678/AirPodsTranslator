@@ -93,3 +93,19 @@ enum AppLanguage {
         code.lowercased().split(whereSeparator: { $0 == "-" || $0 == "_" }).first.map(String.init) ?? code
     }
 }
+
+enum RecognizedSpeechText {
+    private static let ignoredMarkers: Set<String> = [
+        "blankaudio", "noaudio", "nospeech", "空白音频", "无音频"
+    ]
+
+    static func cleaned(_ rawValue: String) -> String? {
+        let text = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let marker = text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .joined()
+        guard !ignoredMarkers.contains(marker) else { return nil }
+        return text
+    }
+}
