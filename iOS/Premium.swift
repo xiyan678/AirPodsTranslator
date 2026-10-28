@@ -32,7 +32,8 @@ final class SubscriptionManager: ObservableObject {
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result,
                   Self.productIDs.contains(transaction.productID),
-                  transaction.revocationDate == nil else { continue }
+                  transaction.revocationDate == nil,
+                  transaction.expirationDate == nil || transaction.expirationDate! > Date() else { continue }
             active = transaction.productID
         }
         activeProductID = active
@@ -66,8 +67,8 @@ final class UsageMeter: ObservableObject {
     var remainingDialogueLines: Int { max(0, Self.freeDialogueLines - dialogueLines) }
 
     func track(active: Bool) {
-        refreshDay()
         let now = Date()
+        refreshDay()
         let elapsed = max(0, now.timeIntervalSince(previousTick))
         previousTick = now
         guard active else { return }

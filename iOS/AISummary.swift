@@ -209,29 +209,21 @@ enum DefaultSummaryAPI {
             throw SummaryAPIError.notConfigured
         }
         let transcript = lines.map { "原文：\($0.original)\n译文：\($0.translated)" }.joined(separator: "\n")
-        let characters = Array(transcript)
-        var outline = existing
-        for offset in stride(from: 0, to: characters.count, by: 8_000) {
-            try Task.checkCancellation()
-            let chunk = String(characters[offset..<min(offset + 8_000, characters.count)])
-            var request = URLRequest(url: url, timeoutInterval: 60)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            guard DCDevice.current.isSupported else { throw SummaryAPIError.deviceVerification }
-            let deviceToken: Data
-            do { deviceToken = try await DCDevice.current.generateToken() }
-            catch { throw SummaryAPIError.deviceVerification }
-            request.setValue(deviceToken.base64EncodedString(), forHTTPHeaderField: "X-Device-Token")
-            request.httpBody = try JSONEncoder().encode(Body(transcript: chunk, previousSummary: outline?.plainText))
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let response = response as? HTTPURLResponse else { throw SummaryAPIError.response }
-            if response.statusCode == 401 || response.statusCode == 403 { throw SummaryAPIError.deviceVerification }
-            guard (200..<300).contains(response.statusCode) else { throw SummaryAPIError.rejected(response.statusCode) }
-            guard let content = String(data: data, encoding: .utf8) else { throw SummaryAPIError.response }
-            outline = try SummaryOutline.decode(content)
-        }
-        guard let outline else { throw SummaryAPIError.empty }
-        return outline
+        var request = URLRequest(url: url, timeoutInterval: 60)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        guard DCDevice.current.isSupported else { throw SummaryAPIError.deviceVerification }
+        let deviceToken: Data
+        do { deviceToken = try await DCDevice.current.generateToken() }
+        catch { throw SummaryAPIError.deviceVerification }
+        request.setValue(deviceToken.base64EncodedString(), forHTTPHeaderField: "X-Device-Token")
+        request.httpBody = try JSONEncoder().encode(Body(transcript: transcript, previousSummary: existing?.plainText))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw SummaryAPIError.response }
+        if response.statusCode == 401 || response.statusCode == 403 { throw SummaryAPIError.deviceVerification }
+        guard (200..<300).contains(response.statusCode) else { throw SummaryAPIError.rejected(response.statusCode) }
+        guard let content = String(data: data, encoding: .utf8) else { throw SummaryAPIError.response }
+        return try SummaryOutline.decode(content)
     }
 }
 

@@ -11,6 +11,7 @@ struct CleanSessionView: View {
     private var keyboardMode: Bool { mode == .dialogue && controller.dialogueKeyboardEnabled }
     private var draft: String { controller.dialogueKeyboardDraft }
     @State private var sending = false
+    @State private var sentDraftID: UUID?
     @FocusState private var inputFocused: Bool
 
     private var active: Bool { controller.mode == mode && controller.isRunning }
@@ -92,8 +93,9 @@ struct CleanSessionView: View {
             .sheet(item: $editingLine) { line in ReviseLineView(line: line) }
             .onChange(of: inputFocused) { _, focused in controller.isKeyboardInputFocused = focused }
             .onChange(of: controller.deliveredDialogueTextID) { _, _ in
-                if keyboardMode, controller.deliveredDialogueText == draft.trimmingCharacters(in: .whitespacesAndNewlines) {
+                if let sentDraftID, keyboardMode, controller.deliveredDialogueTextID == sentDraftID {
                     controller.dialogueKeyboardDraft = ""
+                    self.sentDraftID = nil
                 }
             }
             .onDisappear { controller.isKeyboardInputFocused = false }
@@ -346,6 +348,7 @@ struct CleanSessionView: View {
                     .focused($inputFocused)
                     .submitLabel(.send)
                     .onSubmit { sendText() }
+                    .accessibilityLabel("输入文字，自动识别语言")
                     .padding(16)
                     .background(.white, in: RoundedRectangle(cornerRadius: 20))
                 Button(action: sendText) {
@@ -372,6 +375,7 @@ struct CleanSessionView: View {
         sending = true
         Task {
             await controller.sendDialogueText(submitted)
+            sentDraftID = controller.textRequestID
             sending = false
         }
     }

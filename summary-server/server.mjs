@@ -86,6 +86,13 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
     renameSync(temporary, stateFile);
   }
   const server = http.createServer(async (request, response) => {
+    // Cleanup expired tokens at the start of request handling
+    if (Math.random() < 0.01) {
+      const cutoff = now() - 7 * 86400000;
+      for (const [hash, time] of usedTokens) {
+        if (time < cutoff) usedTokens.delete(hash);
+      }
+    }
     let occupied = false;
     let cancellation;
     let disconnect;
@@ -101,7 +108,7 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       if (!(request.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
         throw new RequestError(415, '请使用 application/json');
       }
-      if (now() / 3600000 >= hour + 1) { perIP.clear(); hour = Math.floor(now() / 3600000); }
+      if (Math.floor(now() / 3600000) !== hour) { perIP.clear(); hour = Math.floor(now() / 3600000); }
       if (Math.floor(now() / 86400000) !== day) { day = Math.floor(now() / 86400000); dailyCount = 0; }
       let ip = request.socket.remoteAddress || 'unknown';
       const realIP = request.headers['x-real-ip'];
@@ -125,7 +132,6 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       if (typeof deviceToken !== 'string' || deviceToken.length < 32 || deviceToken.length > 8192 ||
           !/^[A-Za-z0-9+/]+={0,2}$/.test(deviceToken)) throw new RequestError(401, '设备验证失败');
       const digest = createHash('sha256').update(deviceToken).digest('hex');
-      for (const [hash, time] of usedTokens) if (now() - time > 7 * 86400000) usedTokens.delete(hash);
       if (usedTokens.has(digest)) throw new RequestError(401, '设备验证凭证已使用');
       if (usedTokens.size >= 20000) throw new RequestError(503, '服务繁忙，请稍后重试');
       // Reserve before awaiting Apple, so concurrent replays cannot both pass.
