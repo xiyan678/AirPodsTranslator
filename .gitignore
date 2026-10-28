@@ -1,0 +1,9 @@
+.DS_Store
+.verify/
+.preview-edge*/
+AirPodsTranslator.xcodeproj/
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/

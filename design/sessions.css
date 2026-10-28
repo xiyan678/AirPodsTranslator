@@ -1,0 +1,33 @@
+.phone:has(.session-screen){background:#f6f6f9}
+.phone:has(.session-screen) .preview{display:none}
+.session-screen{height:726px;position:relative;padding:20px 20px 0}
+.session-head{display:flex;justify-content:flex-end;align-items:center;height:50px}
+.session-mode{display:flex;align-items:center;gap:9px;border-radius:30px;background:#fff;padding:12px 15px;color:#087afa;font-size:14px;font-weight:700;border:1px solid #e5eaf3;box-shadow:0 5px 15px #15254808}
+.session-mode .wave{font-size:16px}
+.session-mode .wave svg{width:18px;height:18px;display:block}
+.session-center{position:absolute;top:37%;left:0;right:0;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;text-align:center}
+.session-orb{width:100px;height:100px;border-radius:50%;background:#fff;display:grid;place-items:center;color:#838890;box-shadow:0 16px 40px #1a29630a}
+.session-orb.dialogue-orb{font-size:44px;color:#8a8f9b}
+.session-orb svg,.session-circle svg{display:block}
+.session-center h1{font-size:22px;letter-spacing:-.4px;margin:19px 0 8px;line-height:1.2;color:#0d1222}
+.session-center p{font-size:14px;color:#8c919f;margin:0;line-height:1.5}
+.session-bottom{position:absolute;left:20px;right:20px;bottom:13px;text-align:center}
+.session-languages{height:54px;border-radius:30px;background:#fff;display:flex;align-items:center;justify-content:space-around;font-size:14px;font-weight:650;color:#1b2030;box-shadow:0 9px 25px #1a296308;margin-bottom:20px}
+.session-languages .exchange{color:#0086fa;font-size:24px}
+.session-rounds{display:flex;align-items:center;justify-content:center;gap:37px}
+.session-control{text-align:center;font-size:13px;font-weight:700;color:#202434}
+.session-circle{width:94px;height:94px;border-radius:50%;display:grid;place-items:center;color:white;margin-bottom:8px;box-shadow:0 10px 24px #0d62e329}
+.session-circle.mic{background:#087ffa}
+.session-circle.broadcast{background:#6151ec;box-shadow:0 10px 24px #6151ec29}
+.session-hint{font-size:12px;font-weight:650;color:#4c5261;margin-top:15px}
+.session-dialogue-head{height:54px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.keyboard-pill{border-radius:25px;padding:10px 13px;background:#fff;color:#087ffa;font-size:13px;font-weight:650}
+.dialogue-source{background:#fff;border-radius:30px;padding:14px 18px;text-align:center;color:#087ffa;font-weight:650;font-size:14px;box-shadow:0 9px 25px #1a296308}
+.session-dialogue-controls{display:flex;gap:12px;margin-top:22px}
+.session-speech{border-radius:18px;background:#fff;border:1px solid #d6edf0;flex:1;height:64px;display:flex;align-items:center;justify-content:center;gap:10px;font-weight:700;font-size:15px;color:#00adba}
+.session-speech svg{width:22px;height:22px;display:block}
+.session-speech.other{color:#6552e9;border-color:#e1dbff}
+.session-tabs{position:absolute;bottom:11px;left:20px;right:20px;height:65px;background:#fff;border:1px solid #dfe1e8;border-radius:33px;display:flex;align-items:center;padding:4px;box-shadow:0 8px 20px #17254a0b}
+.session-tab{width:25%;height:56px;border-radius:29px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:650;color:#090b12}
+.session-tab.active{background:#ececef;color:#087afa}
+.session-tab svg{width:22px;height:22px;display:block}
