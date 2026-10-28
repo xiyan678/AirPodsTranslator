@@ -1,0 +1,53 @@
+name: Verification
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verification-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test summary-server/server.test.mjs
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record build environment
+        run: |
+          xcodebuild -version
+          xcrun simctl list devices available
+      - name: Generate test project
+        run: |
+          brew install xcodegen
+          xcodegen generate --spec project-regression.yml
+      - name: Compile and run iOS regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for runtime,group in d["devices"].items() if "iOS" in runtime for x in group if x["name"].startswith("iPhone")))')
+          xcodebuild -project AirPodsTranslatorRegression.xcodeproj \
+            -scheme AirPodsTranslatorRegression \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath build/Regression.xcresult \
+            CODE_SIGNING_ALLOWED=NO test 2>&1 | tee build/xcodebuild.log
+      - name: Preserve evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-verification
+          path: |
+            build/xcodebuild.log
+            build/Regression.xcresult
