@@ -203,18 +203,26 @@ struct CleanSessionView: View {
                               (controller.phase == .replaying && !controller.isRunning))
                     Text(controller.isBroadcastMode ? "屏幕音频中" : active ? "暂停" : "麦克风")
                 }
+                #if !EAR_YI_DEVICE_TEST
                 VStack(spacing: 7) {
                     ScreenBroadcastControl()
                         .frame(width: 94, height: 94)
                         .background(StudioStyle.violet, in: Circle())
                     Text("屏幕广播")
                 }
+                #endif
             }
             .font(.subheadline.weight(.semibold))
+            #if EAR_YI_DEVICE_TEST
+            Text("选择麦克风开始同传")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(StudioStyle.ink)
+            #else
             Text(controller.isBroadcastMode ? "屏幕音频正在翻译，停止请点屏幕广播" :
                  "选择麦克风，或广播其他 App 的屏幕音频")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(StudioStyle.ink)
+            #endif
             if !controller.lines.isEmpty { sessionActions }
         }
         .padding(.horizontal, 20).padding(.top, 15).padding(.bottom, 9)

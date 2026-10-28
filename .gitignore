@@ -2,6 +2,7 @@
 .verify/
 .preview-edge*/
 AirPodsTranslator.xcodeproj/
+AirPodsTranslatorDeviceTest.xcodeproj/
 build/
 DerivedData/
 *.xcuserstate
