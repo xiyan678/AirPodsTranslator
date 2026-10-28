@@ -496,10 +496,8 @@ final class ConversationController: ObservableObject {
 
     private func requestLanguagePack(from source: String, to target: String) {
         status = "需要下载\(AppLanguage.name(source)) → \(AppLanguage.name(target))语言包"
-        let configuration = TranslationSession.Configuration(
-            source: Locale.Language(identifier: source),
-            target: Locale.Language(identifier: target),
-            preferredStrategy: preferences.processingMode == .quality ? .highFidelity : .lowLatency
+        let configuration = TranslationConfigurationFactory.make(
+            source: source, target: target, mode: preferences.processingMode
         )
         languagePackRequest = LanguagePackRequest(configuration: configuration)
     }

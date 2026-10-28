@@ -449,10 +449,9 @@ struct LanguagePacksView: View {
                 let source = reverse ? preferences.preferredLanguage : selected
                 let target = reverse ? selected : preferences.preferredLanguage
                 requestedPair = (source, target)
-                config = TranslationSession.Configuration(source: Locale.Language(identifier: source),
-                                                          target: Locale.Language(identifier: target),
-                                                          preferredStrategy: preferences.processingMode == .quality
-                                                              ? .highFidelity : .lowLatency)
+                config = TranslationConfigurationFactory.make(
+                    source: source, target: target, mode: preferences.processingMode
+                )
             }.disabled(config != nil || choices.isEmpty)
             if config != nil {
                 HStack {

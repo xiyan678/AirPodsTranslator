@@ -49,7 +49,7 @@ final class ConversationStore: ObservableObject {
         guard left.count == right.count else { return false }
         return zip(left, right).allSatisfy { pair in
             let (a, b) = pair
-            a.id == b.id && a.original == b.original && a.translated == b.translated &&
+            return a.id == b.id && a.original == b.original && a.translated == b.translated &&
             a.sourceLanguage == b.sourceLanguage && a.targetLanguage == b.targetLanguage && a.isMine == b.isMine
         }
     }
@@ -182,6 +182,21 @@ enum TranslatorError: LocalizedError {
 }
 
 @MainActor
+enum TranslationConfigurationFactory {
+    static func make(source: String, target: String, mode: ProcessingMode) -> TranslationSession.Configuration {
+        let sourceLanguage = Locale.Language(identifier: source)
+        let targetLanguage = Locale.Language(identifier: target)
+        if #available(iOS 26.4, *) {
+            return TranslationSession.Configuration(
+                source: sourceLanguage, target: targetLanguage,
+                preferredStrategy: mode == .quality ? .highFidelity : .lowLatency
+            )
+        }
+        return TranslationSession.Configuration(source: sourceLanguage, target: targetLanguage)
+    }
+}
+
+@MainActor
 final class LocalTranslator {
     private var translatedTerms: [String: String] = [:]
 
@@ -193,17 +208,28 @@ final class LocalTranslator {
         }
         let sourceLanguage = Locale.Language(identifier: source)
         let targetLanguage = Locale.Language(identifier: target)
-        let strategy: TranslationSession.Strategy = mode == .quality ? .highFidelity : .lowLatency
-        let status = await LanguageAvailability(preferredStrategy: strategy)
-            .status(from: sourceLanguage, to: targetLanguage)
+        let availability: LanguageAvailability
+        if #available(iOS 26.4, *) {
+            let strategy: TranslationSession.Strategy = mode == .quality ? .highFidelity : .lowLatency
+            availability = LanguageAvailability(preferredStrategy: strategy)
+        } else {
+            availability = LanguageAvailability()
+        }
+        let status = await availability.status(from: sourceLanguage, to: targetLanguage)
         switch status {
         case .installed: break
         case .supported: throw TranslatorError.languagePackRequired(source, target)
         case .unsupported: throw TranslatorError.unsupportedPair
         @unknown default: throw TranslatorError.unsupportedPair
         }
-        let session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage,
+        let session: TranslationSession
+        if #available(iOS 26.4, *) {
+            let strategy: TranslationSession.Strategy = mode == .quality ? .highFidelity : .lowLatency
+            session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage,
                                          preferredStrategy: strategy)
+        } else {
+            session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage)
+        }
         let response = try await session.translate(text)
         var translated = response.targetText
         for term in terms where !term.source.isEmpty &&
