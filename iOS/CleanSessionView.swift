@@ -6,9 +6,18 @@ struct CleanSessionView: View {
     let mode: ConversationMode
     @State private var showText = false
     @State private var showPhoto = false
+    @State private var showSummary = false
+    @StateObject private var summary = LiveSummary()
     @State private var editingLine: TranscriptLine?
+    @State private var keyboardMode = false
+    @State private var draft = ""
+    @State private var sending = false
+    @FocusState private var inputFocused: Bool
 
     private var active: Bool { controller.mode == mode && controller.isRunning }
+    private var paused: Bool {
+        controller.mode == mode && controller.phase == .paused && !controller.hasEnded
+    }
 
     var body: some View {
         NavigationStack {
@@ -16,7 +25,7 @@ struct CleanSessionView: View {
                 Color(red: 0.95, green: 0.95, blue: 0.97).ignoresSafeArea()
                 VStack(spacing: 0) {
                     topBar
-                    if controller.lines.isEmpty {
+                    if controller.lines.isEmpty && controller.liveText.isEmpty {
                         Spacer(minLength: 25)
                         emptyState
                         Spacer(minLength: 25)
@@ -24,21 +33,34 @@ struct CleanSessionView: View {
                         ScrollViewReader { scroll in
                             ScrollView {
                                 LazyVStack(spacing: 13) {
-                                    if mode == .listen { compactStatus }
-                                    ForEach(controller.lines) { line in
-                                        TranscriptCard(line: line, size: preferences.fontSize,
+                                    ForEach(Array(controller.lines.enumerated()), id: \.element.id) { index, line in
+                                        if mode == .listen {
+                                            LiveTranscriptCard(original: line.original, translated: line.translated,
+                                                               index: index + 1, completed: true,
+                                                               size: preferences.fontSize)
+                                                .contextMenu {
+                                                    if controller.lines.last?.id == line.id {
+                                                        Button("修改并重译") { editingLine = line }
+                                                    }
+                                                    ShareLink(item: line.original + "\n" + line.translated) { Text("分享") }
+                                                }
+                                                .id(line.id)
+                                        } else if keyboardMode {
+                                            DialogueTextBubble(line: line) { controller.replay(line) }
+                                                .id(line.id)
+                                        } else {
+                                            TranscriptCard(line: line, size: preferences.fontSize,
                                                        onEdit: controller.lines.last?.id == line.id ? {
                                                            editingLine = line
                                                        } : nil)
-                                        .id(line.id)
+                                                .id(line.id)
+                                        }
                                     }
                                     if !controller.liveText.isEmpty {
-                                        Text(controller.liveText)
-                                            .font(.system(size: preferences.fontSize * 0.8))
-                                            .foregroundStyle(.secondary)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(18)
-                                            .background(.white, in: RoundedRectangle(cornerRadius: 18))
+                                        LiveTranscriptCard(original: controller.liveText,
+                                                           translated: controller.liveTranslation,
+                                                           index: controller.lines.count + 1, completed: false,
+                                                           size: preferences.fontSize)
                                             .id("live")
                                     }
                                 }
@@ -52,13 +74,25 @@ struct CleanSessionView: View {
                             }
                         }
                     }
-                    if mode == .listen { liveControls } else { dialogueControls }
+                    if mode == .listen {
+                        if !active && !paused { liveControls }
+                    } else if keyboardMode { keyboardControls }
+                    else { dialogueControls }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showText) { TextTranslationView(preferences: preferences) }
             .sheet(isPresented: $showPhoto) { CameraTranslateView() }
+            .sheet(isPresented: $showSummary) { LiveSummaryView(summary: summary) }
             .sheet(item: $editingLine) { line in ReviseLineView(line: line) }
+            .onChange(of: inputFocused) { _, focused in controller.isKeyboardInputFocused = focused }
+            .onDisappear { controller.isKeyboardInputFocused = false }
+            .task(id: keyboardMode) {
+                if keyboardMode {
+                    await Task.yield()
+                    inputFocused = true
+                }
+            }
             .onAppear {
                 if controller.mode != mode {
                     if controller.isRunning || controller.isPreparing { controller.pause() }
@@ -83,26 +117,34 @@ struct CleanSessionView: View {
         HStack {
             if mode == .listen {
                 Spacer()
-                Menu {
-                    Button("文本翻译", systemImage: "text.bubble") { showText = true }
-                    Button("图片翻译", systemImage: "photo") { showPhoto = true }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "waveform")
-                        Text("实时同传")
-                        Image(systemName: "chevron.down").font(.caption.weight(.bold))
+                if active || paused {
+                    liveSessionControls
+                } else {
+                    Menu {
+                        Button("文本翻译", systemImage: "text.bubble") { showText = true }
+                        Button("图片翻译", systemImage: "photo") { showPhoto = true }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "waveform")
+                            Text("实时同传")
+                            Image(systemName: "chevron.down").font(.caption.weight(.bold))
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(StudioStyle.blue)
+                        .padding(.horizontal, 17).frame(height: 44)
+                        .background(.white, in: Capsule())
+                        .overlay(Capsule().strokeBorder(StudioStyle.blue.opacity(0.12)))
                     }
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(StudioStyle.blue)
-                    .padding(.horizontal, 17).frame(height: 44)
-                    .background(.white, in: Capsule())
-                    .overlay(Capsule().strokeBorder(StudioStyle.blue.opacity(0.12)))
                 }
             } else {
                 DialogueLanguagePicker(preferences: preferences,
                                        otherLanguage: $controller.lastOtherLanguage)
-                Button { showText = true } label: {
-                    Label("键盘", systemImage: "keyboard")
+                Button {
+                    if !keyboardMode && (controller.isRunning || controller.isPreparing) { controller.pause() }
+                    keyboardMode.toggle()
+                    if !keyboardMode { inputFocused = false }
+                } label: {
+                    Label(keyboardMode ? "语音" : "键盘", systemImage: keyboardMode ? "mic.fill" : "keyboard")
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 15).frame(height: 42)
                         .background(.white, in: Capsule())
@@ -131,7 +173,9 @@ struct CleanSessionView: View {
             Text(mode == .listen ? emptyTitle : "开始一段对话")
                 .font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundStyle(StudioStyle.ink)
-            Text(mode == .listen ? emptySubtitle : "选择说话的人，完成后自动显示译文。")
+            Text(mode == .listen ? emptySubtitle : keyboardMode
+                 ? "输入任一语言，自动识别并翻译成另一种语言。"
+                 : "选择说话的人，完成后自动显示译文。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -173,39 +217,10 @@ struct CleanSessionView: View {
         }
     }
 
-    private var compactStatus: some View {
-        HStack(spacing: 8) {
-            Image(systemName: active ? "waveform" : "pause.circle")
-            Text(controller.status)
-            Spacer()
-            Text(controller.outputRouteName).lineLimit(1)
-        }
-        .font(.footnote).foregroundStyle(StudioStyle.muted)
-        .padding(.horizontal, 4)
-    }
-
     private var liveControls: some View {
         VStack(spacing: 13) {
             LiveLanguagePicker(preferences: preferences, fallback: controller.lastOtherLanguage)
-            if active {
-                HStack(spacing: 18) {
-                    liveActionButton(symbol: preferences.autoReadAloud
-                                     ? "speaker.wave.2.fill" : "speaker.slash.fill",
-                                     tint: preferences.autoReadAloud ? StudioStyle.blue : .gray,
-                                     accessibilityLabel: preferences.autoReadAloud
-                                     ? "关闭译文朗读" : "开启译文朗读") {
-                        controller.toggleReadAloud()
-                    }
-                    liveActionButton(symbol: "pause.fill", tint: StudioStyle.blue,
-                                     accessibilityLabel: "暂停同传") {
-                        controller.pause()
-                    }
-                    liveActionButton(symbol: "stop.fill", tint: .red,
-                                     accessibilityLabel: "结束并保存") {
-                        controller.end(save: true)
-                    }
-                }
-            } else {
+            Group {
                 HStack(spacing: 34) {
                     VStack(spacing: 7) {
                         Button { Task { await controller.start() } } label: {
@@ -230,23 +245,47 @@ struct CleanSessionView: View {
                 }
             }
             #if EAR_YI_DEVICE_TEST
-            if !active {
+            if !active && !paused {
                 Text("选择麦克风开始同传")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(StudioStyle.ink)
             }
             #else
-            if !active {
+            if !active && !paused {
                 Text(controller.isBroadcastMode ? "屏幕音频正在翻译，停止请点屏幕广播" :
                      "选择麦克风，或广播其他 App 的屏幕音频")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(StudioStyle.ink)
             }
             #endif
-            if !controller.lines.isEmpty { sessionActions }
         }
+        .disabled(controller.isEnding)
         .padding(.horizontal, 20).padding(.top, 15).padding(.bottom, 9)
         .background(Color.clear)
+    }
+
+    private var liveSessionControls: some View {
+        HStack(spacing: 16) {
+            liveActionButton(symbol: "sparkles", tint: .purple,
+                             accessibilityLabel: "实时总结") { showSummary = true }
+            liveActionButton(symbol: preferences.autoReadAloud
+                             ? "speaker.wave.2.fill" : "speaker.slash.fill",
+                             tint: preferences.autoReadAloud ? StudioStyle.blue : .gray,
+                             accessibilityLabel: preferences.autoReadAloud
+                             ? "关闭译文朗读" : "开启译文朗读") {
+                controller.toggleReadAloud()
+            }
+            liveActionButton(symbol: paused ? "play.fill" : "pause.fill", tint: StudioStyle.blue,
+                             accessibilityLabel: paused ? "继续同传" : "暂停同传") {
+                if paused { Task { await controller.start() } }
+                else { controller.pause() }
+            }
+            liveActionButton(symbol: "stop.fill", tint: .red,
+                             accessibilityLabel: "结束并保存") {
+                controller.end(save: true)
+            }
+        }
+        .disabled(controller.isEnding)
     }
 
     private func liveActionButton(symbol: String, tint: Color, accessibilityLabel: String,
@@ -270,8 +309,54 @@ struct CleanSessionView: View {
             }
             if !controller.lines.isEmpty { sessionActions }
         }
+        .disabled(controller.isEnding)
         .padding(.horizontal, 20).padding(.top, 15).padding(.bottom, 9)
         .background(Color.clear)
+    }
+
+    private var keyboardControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("自动识别输入语言")
+                .font(.footnote).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                TextField("输入文字，自动识别语言", text: $draft)
+                    .focused($inputFocused)
+                    .submitLabel(.send)
+                    .onSubmit { sendText() }
+                    .padding(16)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 20))
+                Button(action: sendText) {
+                    Group {
+                        if sending { ProgressView().tint(.white) }
+                        else { Image(systemName: "arrow.up").font(.title2.weight(.semibold)) }
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: 52, height: 52)
+                    .background(StudioStyle.cyan, in: Circle())
+                }
+                .accessibilityLabel("发送并翻译")
+                .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                          controller.languagePackRequest != nil || controller.isEnding)
+            }
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
+    }
+
+    private func sendText() {
+        let submitted = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !submitted.isEmpty, !sending, !controller.isEnding,
+              controller.languagePackRequest == nil else { return }
+        sending = true
+        Task {
+            await controller.sendDialogueText(submitted)
+            if controller.errorMessage == nil, !controller.showPaywall,
+               controller.textOriginal == submitted,
+               (!controller.textTranslation.isEmpty || controller.languagePackRequest != nil),
+               draft.trimmingCharacters(in: .whitespacesAndNewlines) == submitted {
+                draft = ""
+            }
+            sending = false
+        }
     }
 
     private func dialogueButton(_ language: String, tint: Color) -> some View {
@@ -304,6 +389,59 @@ struct CleanSessionView: View {
         .font(.footnote.weight(.semibold))
         .foregroundStyle(StudioStyle.blue)
         .padding(.horizontal, 14)
+    }
+}
+
+private struct LiveTranscriptCard: View {
+    let original: String
+    let translated: String
+    let index: Int
+    let completed: Bool
+    let size: Double
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(completed ? "已完成" : "识别中", systemImage: completed ? "checkmark.circle.fill" : "waveform")
+                    .foregroundStyle(completed ? Color.green : .gray)
+                Spacer()
+                Text("#\(index)").foregroundStyle(.gray)
+            }
+            .font(.caption.weight(.semibold))
+            Text(original).font(.system(size: size * 0.76)).foregroundStyle(.secondary)
+            if !translated.isEmpty {
+                Text(translated).font(.system(size: size, weight: .semibold))
+                    .foregroundStyle(StudioStyle.blue)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+        .background(.white, in: RoundedRectangle(cornerRadius: 24))
+    }
+}
+
+private struct DialogueTextBubble: View {
+    let line: TranscriptLine
+    let replay: () -> Void
+
+    var body: some View {
+        HStack {
+            if !line.isMine { Spacer(minLength: 44) }
+            VStack(alignment: .leading, spacing: 10) {
+                Text(AppLanguage.name(line.sourceLanguage))
+                    .font(.caption.weight(.semibold)).foregroundStyle(StudioStyle.violet)
+                Text(line.original).foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 8) {
+                    Button(action: replay) {
+                        Image(systemName: "speaker.wave.2.fill").foregroundStyle(StudioStyle.blue)
+                    }
+                    .accessibilityLabel("朗读译文")
+                    Text(line.translated).font(.body.weight(.semibold)).textSelection(.enabled)
+                }
+            }
+            .padding(18)
+            .background(line.isMine ? Color.white : StudioStyle.violet.opacity(0.10),
+                        in: RoundedRectangle(cornerRadius: 22))
+            if line.isMine { Spacer(minLength: 44) }
+        }
     }
 }
 

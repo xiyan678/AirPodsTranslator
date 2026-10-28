@@ -14,6 +14,9 @@ workflows:
       - name: Generate Xcode project
         script: |
           xcodegen generate
+          if [ -n "${SUMMARY_SERVICE_URL:-}" ]; then
+            /usr/libexec/PlistBuddy -c "Set :EarYiSummaryServiceURL $SUMMARY_SERVICE_URL" iOS/Info.plist
+          fi
       - name: Build unsigned iOS Simulator app
         script: |
           xcodebuild -project AirPodsTranslator.xcodeproj \
@@ -46,6 +49,9 @@ workflows:
       - name: Generate iPhone test project
         script: |
           xcodegen generate --spec project-device-test.yml
+          if [ -n "${SUMMARY_SERVICE_URL:-}" ]; then
+            /usr/libexec/PlistBuddy -c "Set :EarYiSummaryServiceURL $SUMMARY_SERVICE_URL" iOS/Info.plist
+          fi
       - name: Set up Ad Hoc signing
         script: |
           xcode-project use-profiles --project AirPodsTranslatorDeviceTest.xcodeproj

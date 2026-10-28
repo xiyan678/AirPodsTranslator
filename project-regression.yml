@@ -1,0 +1,22 @@
+include:
+  - project-device-test.yml
+name: AirPodsTranslatorRegression
+targets:
+  AirPodsTranslatorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: AirPodsTranslator
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.eggplant1907.jet4469.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  AirPodsTranslatorRegression:
+    build:
+      targets:
+        AirPodsTranslator: all
+    test:
+      targets:
+        - AirPodsTranslatorTests

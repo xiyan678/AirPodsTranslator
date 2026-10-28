@@ -13,9 +13,15 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var conversations: [SavedConversation] = []
     @Published private(set) var loadError: String?
     private let file: URL
+    @Published private(set) var canUndoDelete = false
+    private var deletedItems: [SavedConversation] = []
+    private var summaryRevisions: [UUID: UUID] = [:]
+    private let summarize: @MainActor ([TranscriptLine]) async -> String
 
-    init() {
-        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    init(directory: URL? = nil,
+         summarize: (@MainActor ([TranscriptLine]) async -> String)? = nil) {
+        self.summarize = summarize ?? { lines in await ConversationSummarizer.summarize(lines) }
+        let directory = directory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         file = directory.appendingPathComponent("conversations.json")
         if FileManager.default.fileExists(atPath: file.path) {
             do {
@@ -27,22 +33,40 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    func save(_ lines: [TranscriptLine]) async throws {
+    func save(_ lines: [TranscriptLine], id: UUID? = nil) async throws {
         guard loadError == nil else { throw ConversationStoreError.unreadableHistory }
         guard !lines.isEmpty else { return }
         let lineIDs = lines.map(\.id)
         if conversations.contains(where: { Self.sameContent($0.lines, lines) }) { return }
-        let summary = await ConversationSummarizer.summarize(lines)
-        if conversations.contains(where: { Self.sameContent($0.lines, lines) }) { return }
         var updated = conversations
-        if let index = updated.firstIndex(where: { $0.lines.map(\.id) == lineIDs }) {
+        let recordID: UUID
+        if let index = updated.firstIndex(where: { (id != nil && $0.id == id) || $0.lines.map(\.id) == lineIDs }) {
+            recordID = updated[index].id
             updated[index].lines = lines
-            updated[index].summary = summary
         } else {
-            updated.insert(SavedConversation(lines: lines, summary: summary), at: 0)
+            let record = SavedConversation(id: id ?? UUID(), lines: lines,
+                                           summary: String((lines.first?.translated ?? "").prefix(200)))
+            recordID = record.id
+            updated.insert(record, at: 0)
         }
         try persist(updated)
         conversations = updated
+        let revision = UUID()
+        summaryRevisions[recordID] = revision
+        let summarize = self.summarize
+        Task { [weak self] in
+            let summary = await summarize(lines)
+            guard let self, self.summaryRevisions[recordID] == revision,
+                  let index = self.conversations.firstIndex(where: { $0.id == recordID }),
+                  Self.sameContent(self.conversations[index].lines, lines) else { return }
+            var refreshed = self.conversations
+            refreshed[index].summary = summary
+            do {
+                try self.persist(refreshed)
+                self.conversations = refreshed
+            } catch { /* 正文已保存，摘要失败不影响记录。 */ }
+            self.summaryRevisions[recordID] = nil
+        }
     }
 
     private static func sameContent(_ left: [TranscriptLine], _ right: [TranscriptLine]) -> Bool {
@@ -58,7 +82,21 @@ final class ConversationStore: ObservableObject {
         guard loadError == nil else { throw ConversationStoreError.unreadableHistory }
         let updated = conversations.filter { !ids.contains($0.id) }
         try persist(updated)
+        deletedItems = conversations.filter { ids.contains($0.id) }
+        for id in ids { summaryRevisions[id] = nil }
+        canUndoDelete = !deletedItems.isEmpty
         conversations = updated
+    }
+
+    func undoDelete() throws {
+        guard loadError == nil else { throw ConversationStoreError.unreadableHistory }
+        let existingIDs = Set(conversations.map(\.id))
+        let restored = (conversations + deletedItems.filter { !existingIDs.contains($0.id) })
+            .sorted { $0.date > $1.date }
+        try persist(restored)
+        conversations = restored
+        deletedItems = []
+        canUndoDelete = false
     }
 
     private func persist(_ items: [SavedConversation]) throws {
@@ -330,6 +368,16 @@ final class AudioCapture: NSObject, ObservableObject {
         silenceSince = nil
     }
 
+    func takePendingSpeech() -> [Float]? {
+        guard beganSpeaking, voicedSampleCount >= 1_600 else { return nil }
+        let utterance = samples
+        samples = []
+        beganSpeaking = false
+        voicedSampleCount = 0
+        silenceSince = nil
+        return utterance
+    }
+
     private func append(_ chunk: [Float]) {
         guard isRecording, !chunk.isEmpty else { return }
         let energy = sqrt(chunk.reduce(Float(0)) { $0 + $1 * $1 } / Float(chunk.count))
@@ -351,7 +399,7 @@ final class AudioCapture: NSObject, ObservableObject {
             return
         }
         let silence = silenceSince.map { now.timeIntervalSince($0) } ?? 0
-        let minimumVoicedSamples = Int(16_000.0 * (quality ? 0.5 : 0.4))
+        let minimumVoicedSamples = 1_600
         let hasEnoughSpeech = voicedSampleCount >= minimumVoicedSamples
         let silenceLimit = quality ? 1.5 : 1.2
         let maximumSamples = 16_000 * (quality ? 30 : 20)
@@ -378,24 +426,35 @@ final class AudioCapture: NSObject, ObservableObject {
 @MainActor
 final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
-    private var completion: (() -> Void)?
+    private var completions: [() -> Void] = []
+    private(set) var isPlaying = false
     private var activeUtteranceID: ObjectIdentifier?
     override init() { super.init(); synthesizer.delegate = self }
 
     @discardableResult
     func speak(_ text: String, language: String, rate: Float, destination: AudioDestination,
                done: @escaping () -> Void) -> Bool {
-        finish()
+        // 替换播放时保留完成回调，等最后一条语音结束才恢复收音。
+        isPlaying = true
+        activeUtteranceID = nil
+        completions.append(done)
         synthesizer.stopSpeaking(at: .immediate)
         guard let voice = AVSpeechSynthesisVoice(language: language) ??
                 AVSpeechSynthesisVoice.speechVoices().first(where: {
                     AppLanguage.normalizedCode($0.language) == language
                 }) else {
-            done()
+            finish()
             return false
         }
-        completion = done
         let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playAndRecord, mode: .default,
+                                    options: [.allowBluetoothA2DP, .defaultToSpeaker])
+            try session.setActive(true)
+        } catch {
+            finish()
+            return false
+        }
         if destination == .speaker {
             try? session.overrideOutputAudioPort(.speaker)
         } else {
@@ -413,9 +472,10 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
 
     private func finish() {
         activeUtteranceID = nil
-        let callback = completion
-        completion = nil
-        callback?()
+        isPlaying = false
+        let callbacks = completions
+        completions = []
+        for callback in callbacks { callback() }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {

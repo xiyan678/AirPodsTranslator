@@ -9,7 +9,9 @@ struct RootView: View {
     @State private var selectedTab: MainTab = .listen
     var body: some View {
         page
-            .safeAreaInset(edge: .bottom, spacing: 0) { bottomNavigation }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !controller.isKeyboardInputFocused { bottomNavigation }
+            }
             .background(Color(red: 0.95, green: 0.95, blue: 0.97))
             .tint(StudioStyle.blue)
             .sheet(isPresented: $controller.showPaywall) {
@@ -60,6 +62,7 @@ struct RootView: View {
             }
         }
         .padding(5)
+        .disabled(controller.isEnding)
         .background(.white, in: Capsule())
         .overlay(Capsule().strokeBorder(Color.gray.opacity(0.18)))
         .padding(.horizontal, 20).padding(.bottom, 8)
@@ -250,6 +253,8 @@ struct HistoryView: View {
     @ObservedObject var store: ConversationStore
     @State private var query = ""
     @State private var storageError: String?
+    @State private var selection = Set<UUID>()
+    @State private var editMode: EditMode = .inactive
     private var filtered: [SavedConversation] {
         store.conversations.filter {
             query.isEmpty || $0.summary.localizedCaseInsensitiveContains(query) ||
@@ -258,7 +263,7 @@ struct HistoryView: View {
     }
     var body: some View {
         NavigationStack {
-            List {
+            List(selection: $selection) {
                 if let loadError = store.loadError {
                     Text(loadError).foregroundStyle(.red)
                 }
@@ -298,6 +303,31 @@ struct HistoryView: View {
             .navigationTitle("对话记录")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { EditButton() }
+                ToolbarItem(placement: .topBarLeading) {
+                    if store.canUndoDelete {
+                        Button("撤销删除") {
+                            do { try store.undoDelete() }
+                            catch { storageError = error.localizedDescription }
+                        }
+                    }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    if editMode.isEditing {
+                        Button("删除所选（\(selection.count)）", role: .destructive) {
+                            do {
+                                try store.delete(selection)
+                                selection = []
+                            } catch { storageError = error.localizedDescription }
+                        }
+                        .disabled(selection.isEmpty)
+                    }
+                }
+            }
+            .environment(\.editMode, $editMode)
+            .onChange(of: editMode) { _, value in if !value.isEditing { selection = [] } }
+            .onChange(of: query) { _, _ in selection = [] }
+            .onChange(of: store.conversations.map(\.id)) { _, ids in
+                selection.formIntersection(Set(ids))
             }
             .scrollContentBackground(.hidden)
             .background(StudioBackground().ignoresSafeArea())
@@ -352,6 +382,7 @@ struct SettingsView: View {
                                               set: { preferences.speechRate = Float($0) }), in: 0.35...0.65)
                     }
                 }
+                SummarySettingsSection()
                 Section("记录") { Toggle("自动保存对话", isOn: $preferences.saveAutomatically) }
                 Section("耳译 Pro") {
                     PremiumStatusCard(subscriptions: controller.subscriptions)
