@@ -168,14 +168,21 @@ final class SubtitlePictureInPicture: NSObject, ObservableObject {
 
 extension SubtitlePictureInPicture: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        Task { @MainActor in self.active = true }
+        Task { @MainActor in
+            guard self.controller === pictureInPictureController else { return }
+            self.active = true
+        }
     }
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        Task { @MainActor in self.tearDown() }
+        Task { @MainActor in
+            guard self.controller === pictureInPictureController else { return }
+            self.tearDown()
+        }
     }
     nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
                                               failedToStartPictureInPictureWithError error: Error) {
         Task { @MainActor in
+            guard self.controller === pictureInPictureController else { return }
             self.tearDown()
             self.onError?("画中画启动失败，请保持同传运行后重试。")
         }
@@ -188,7 +195,10 @@ extension SubtitlePictureInPicture: AVPictureInPictureControllerDelegate {
 
 extension SubtitlePictureInPicture: AVPictureInPictureSampleBufferPlaybackDelegate {
     nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
-        Task { @MainActor in self.onPlaybackChange?(playing) }
+        Task { @MainActor in
+            guard self.controller === pictureInPictureController else { return }
+            self.onPlaybackChange?(playing)
+        }
     }
     nonisolated func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {
         CMTimeRange(start: .zero, duration: .positiveInfinity)

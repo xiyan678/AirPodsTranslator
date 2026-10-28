@@ -43,7 +43,7 @@ final class ConversationStore: ObservableObject {
         }
         var updated = conversations
         let recordID: UUID
-        if let index = updated.firstIndex(where: { (id != nil && $0.id == id) || $0.lines.map(\.id) == lineIDs }) {
+        if let index = updated.firstIndex(where: { id != nil ? $0.id == id : $0.lines.map(\.id) == lineIDs }) {
             recordID = updated[index].id
             updated[index].lines = lines
             updated[index].outline = outline

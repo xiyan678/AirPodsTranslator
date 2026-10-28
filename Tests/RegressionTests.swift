@@ -79,6 +79,17 @@ final class RegressionTests: XCTestCase {
         XCTAssertNil(controller.languagePackRequest)
     }
 
+    func testExplicitConversationIDsNeverMergeEvenWithIdenticalLines() async throws {
+        let url = try directory()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ConversationStore(directory: url, summarize: { _ in "summary" })
+        let sharedLines = [line("hello")]
+        let first = UUID(), second = UUID()
+        try await store.save(sharedLines, id: first)
+        try await store.save(sharedLines, id: second)
+        XCTAssertEqual(Set(store.conversations.map(\.id)), Set([first, second]))
+    }
+
     func testBodyIsPersistedBeforeSummaryFinishes() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }

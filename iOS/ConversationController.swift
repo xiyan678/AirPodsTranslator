@@ -76,6 +76,7 @@ final class ConversationController: ObservableObject {
     private var sessionID: UUID?
     private var imageRequestID: UUID?
     private var revisionID: UUID?
+    private var playbackID: UUID?
     private var waitingUtterance: PendingUtterance?
     private var pausedUtterances: [PendingUtterance] = []
     private var restoringUtterance: PendingUtterance?
@@ -239,10 +240,13 @@ final class ConversationController: ObservableObject {
 
     func start() async {
         guard !isEnding, !isRunning, !isPreparing, phase != .replaying else { return }
+        let requestedConversation = conversationID
+        let requestedMode = mode
         if !subscriptions.isPro &&
             (mode == .listen ? usage.remainingLiveSeconds == 0 : usage.remainingDialogueLines == 0) {
             await subscriptions.refresh()
-            guard !isRunning, !isPreparing, phase != .replaying else { return }
+            guard conversationID == requestedConversation, mode == requestedMode,
+                  !isEnding, !isRunning, !isPreparing, phase != .replaying else { return }
         }
         guard subscriptions.isPro || (mode == .listen ? usage.remainingLiveSeconds > 0 : usage.remainingDialogueLines > 0) else {
             showPaywall = true
@@ -307,6 +311,7 @@ final class ConversationController: ObservableObject {
         if let tail = capture.takePendingSpeech() { pausedSamples.append(tail) }
         usage.track(active: !subscriptions.isPro && mode == .listen && capture.isRecording)
         sessionID = nil
+        playbackID = nil
         isBroadcastMode = false
         capture.stop()
         player.stop()
@@ -427,9 +432,12 @@ final class ConversationController: ObservableObject {
             return
         }
         let previousPhase = phase
+        let token = UUID()
+        playbackID = token
         transition(to: .replaying)
         let activeSession = sessionID
         if isRunning {
+            if let tail = capture.takePendingSpeech() { pending.append(tail) }
             capture.stop()
             latestPartial = nil
             clearLivePreview()
@@ -438,9 +446,11 @@ final class ConversationController: ObservableObject {
         let played = player.speak(line.translated, language: line.targetLanguage,
                                   rate: preferences.speechRate, destination: output) { [weak self] in
             guard let self else { return }
-            guard self.sessionID == activeSession else { return }
+            guard self.sessionID == activeSession, self.playbackID == token else { return }
+            self.playbackID = nil
             self.transition(to: previousPhase)
-            self.resumeCapture()
+            if self.pending.isEmpty { self.resumeCapture() }
+            else { Task { await self.drain() } }
         }
         if !played { errorMessage = "当前设备没有\(AppLanguage.name(line.targetLanguage))语音" }
         updateOutputRoute()
