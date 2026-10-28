@@ -297,6 +297,10 @@ final class ConversationController: ObservableObject {
             pausedUtterances.append(item)
         } else if let activeSamples { pausedSamples.append(activeSamples.samples) }
         languagePackResumeID = nil
+        textRequestID = nil
+        imageRequestID = nil
+        revisionID = nil
+        imageIsProcessing = false
         restoringUtterance = nil
         activeSamples = nil
         pausedSamples.append(contentsOf: pending)
@@ -397,6 +401,12 @@ final class ConversationController: ObservableObject {
         }
     }
     func clearCurrent() {
+        guard !isEnding else { return }
+        pause()
+        pausedSamples = []
+        pausedUtterances = []
+        conversationID = UUID()
+        hasEnded = false
         revisionID = nil
         waitingRevision = nil
         textRequestID = nil
@@ -779,7 +789,9 @@ final class ConversationController: ObservableObject {
         waitingImage = nil
         waitingText = nil
         waitingRevision = nil
-        errorMessage = error.localizedDescription
+        languagePackResumeID = nil
+        restoringUtterance = nil
+        errorMessage = "翻译准备失败，请检查语言包后重试。输入文字已保留。"
         status = "语言包下载未完成"
         if resumeUtterance { resumeCapture() }
         if !pending.isEmpty { Task { await drain() } }

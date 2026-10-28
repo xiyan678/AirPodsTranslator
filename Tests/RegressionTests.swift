@@ -46,6 +46,39 @@ final class RegressionTests: XCTestCase {
         XCTAssertTrue(controller.lines.isEmpty)
     }
 
+    func testClearingPendingKeyboardTranslationDoesNotLeaveEndWaiting() async {
+        let controller = ConversationController()
+        controller.selectMode(.dialogue)
+        controller.preferences.preferredLanguage = "zh"
+        controller.lastOtherLanguage = "en"
+        await controller.sendDialogueText("你好")
+        XCTAssertNotNil(controller.languagePackRequest)
+        let oldID = controller.currentConversationID
+        controller.clearCurrent()
+        XCTAssertNil(controller.languagePackRequest)
+        XCTAssertNotEqual(controller.currentConversationID, oldID)
+        controller.end()
+        XCTAssertFalse(controller.isEnding)
+        XCTAssertTrue(controller.hasEnded)
+    }
+
+    func testOldLanguagePreparationFailureCannotAffectNewPage() async {
+        let controller = ConversationController()
+        controller.selectMode(.dialogue)
+        controller.preferences.preferredLanguage = "zh"
+        controller.lastOtherLanguage = "en"
+        await controller.sendDialogueText("你好")
+        guard let request = controller.languagePackRequest else {
+            XCTFail("Expected language preparation")
+            return
+        }
+        controller.selectMode(.listen)
+        controller.languagePackFailed(NSError(domain: "test", code: 1), for: request.id)
+        XCTAssertNil(controller.errorMessage)
+        XCTAssertTrue(controller.lines.isEmpty)
+        XCTAssertNil(controller.languagePackRequest)
+    }
+
     func testBodyIsPersistedBeforeSummaryFinishes() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }
