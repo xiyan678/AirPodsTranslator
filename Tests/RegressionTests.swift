@@ -229,6 +229,24 @@ final class RegressionTests: XCTestCase {
         capture.stop()
     }
 
+    func testLongChangingSpeechDoesNotGetAbsorbedIntoNoiseFloor() {
+        let capture = AudioCapture()
+        capture.liveSegmentation = true
+        var deliveredSamples = 0
+        capture.onUtterance = { deliveredSamples += $0.count }
+        capture.startExternal()
+        // 连续 30 秒有强弱变化的语音能量，不加入句间长静音。
+        // 底噪估计应跟随安静部分，而不能持续追上较响的音节。
+        for _ in 0..<120 {
+            capture.feedExternal(Array(repeating: 0.2, count: 2_560))
+            capture.feedExternal(Array(repeating: 0.02, count: 1_440))
+        }
+        deliveredSamples += capture.takePendingSpeech()?.count ?? 0
+        XCTAssertGreaterThanOrEqual(deliveredSamples, 16_000 * 29,
+                                    "连续说话不能在底噪适应后丢失后半段音频")
+        capture.stop()
+    }
+
     func testUtteranceDropsLongTrailingSilence() {
         let capture = AudioCapture()
         var utterances: [[Float]] = []
