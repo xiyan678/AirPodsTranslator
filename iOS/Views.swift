@@ -422,6 +422,9 @@ struct SettingsView: View {
                                               set: { preferences.speechRate = Float($0) }), in: 0.35...0.65)
                     }
                 }
+                Section("服务") {
+                    NavigationLink("服务连接") { ServiceConnectionView() }
+                }
                 SummarySettingsSection()
                 Section("记录") { Toggle("自动保存对话", isOn: $preferences.saveAutomatically) }
                 SubscriptionSettingsSection(subscriptions: controller.subscriptions, usage: controller.usage)

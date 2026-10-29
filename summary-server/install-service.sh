@@ -32,7 +32,7 @@ chmod 600 "$project_dir/.env"
 chmod 755 "$project_dir"
 chmod 644 "$project_dir/server.mjs"
 chmod 644 "$project_dir/device-check.mjs"
-chmod 644 "$project_dir/speech.mjs" "$project_dir/referrals.mjs"
+chmod 644 "$project_dir/speech.mjs" "$project_dir/referrals.mjs" "$project_dir/client-auth.mjs" "$project_dir/pair-client.mjs"
 chmod 755 "$project_dir/certificates"
 chmod 644 "$project_dir"/certificates/*.cer
 if [[ ! -d "$project_dir/node_modules/ws" || ! -d "$project_dir/node_modules/@apple/app-store-server-library" ]]; then

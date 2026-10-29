@@ -25,11 +25,16 @@ cp -p -- .env "$backup_file"
 chmod 600 -- "$backup_file"
 "$node_bin" --input-type=module <<'NODE'
 import { readFileSync, writeFileSync } from 'node:fs';
+import { parseEnv } from 'node:util';
 let text = readFileSync('.env', 'utf8');
+// Personal testing without Apple credentials uses an explicitly paired client.
+const parsed = parseEnv(text);
+const hasApple = ['APPLE_TEAM_ID', 'DEVICECHECK_KEY_ID', 'DEVICECHECK_KEY_FILE'].every(name => parsed[name]?.trim());
 const settings = {
   DASHSCOPE_WORKSPACE_ID: 'ws-3vtghkxq6gkuap9d',
   COSYVOICE_MODEL: 'cosyvoice-v3.5-plus',
-  COSYVOICE_VOICE: 'cosyvoice-v3.5-plus-bailian-20fde1dbc7b04884862ee1b54a2c128f'
+  COSYVOICE_VOICE: 'cosyvoice-v3.5-plus-bailian-20fde1dbc7b04884862ee1b54a2c128f',
+  ...(!hasApple ? { CLIENT_PAIRING_ENABLED: '1' } : {})
 };
 for (const [name, value] of Object.entries(settings)) {
   const pattern = new RegExp('^[ \t]*(?:export[ \t]+)?' + name + '[ \t]*=.*$', 'gm');
@@ -50,4 +55,7 @@ printf '\n'
 curl --fail --silent --show-error https://ai.duwang.win/v1/speech/health
 printf '\n'
 echo '语音模块已更新。configured 必须为 true；随后在新版 App 内测试实际安娜播报。'
-echo '若 configured 为 false，请检查原有百炼和 DeviceCheck 配置；不需要向聊天发送密钥。'
+if "$node_bin" --env-file=.env -e 'process.exit(process.env.CLIENT_PAIRING_ENABLED === "1" ? 0 : 1)'; then
+  runuser -u www -- "$node_bin" --env-file=.env pair-client.mjs
+fi
+echo '若 configured 为 false，请检查百炼及服务授权配置；不需要向聊天发送密钥。'

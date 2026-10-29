@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from '
 import { dirname, resolve } from 'node:path';
 import { createDeviceVerifier } from './device-check.mjs';
 import { createSpeechSynthesizer } from './speech.mjs';
+import { createClientAccess, ClientAccessError } from './client-auth.mjs';
 import { createReferralService, createPurchaseVerifier, ReferralError } from './referrals.mjs';
 
 const instructions = `从对话中提炼要点，使用中文。只返回 JSON 对象，包含 keyPoints、questions、nextSteps 三个字符串数组。
@@ -61,6 +62,9 @@ async function readBody(request) {
 export function createSummaryServer({ env = process.env, fetchImpl = fetch, now = Date.now,
   deviceVerifier = createDeviceVerifier(env, fetchImpl, now), stateFile = null,
   speech = createSpeechSynthesizer(env),
+  clientAccess = createClientAccess({ env, now,
+    stateFile: env.CLIENT_AUTH_STATE_FILE || (stateFile ? resolve(dirname(stateFile), 'client-access.json') : null),
+    pairingFile: env.CLIENT_PAIRING_FILE || (stateFile ? resolve(dirname(env.CLIENT_AUTH_STATE_FILE || stateFile), 'client-pairing.json') : null) }),
   referrals = createReferralService({ file: env.REFERRAL_STATE_FILE || (stateFile ? resolve(dirname(stateFile), 'referrals.json') : null),
     now, deviceVerifier, purchaseVerifier: createPurchaseVerifier(env), bundleID: env.APPLE_BUNDLE_ID }) } = {}) {
   const perIP = new Map();
@@ -103,21 +107,22 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
     let disconnect;
     try {
       if (request.method === 'GET' && request.url === '/health') {
-        reply(response, 200, { ok: true, configured: Boolean(env.DASHSCOPE_API_KEY?.trim()) && deviceVerifier.configured });
+        reply(response, 200, { ok: true, configured: Boolean(env.DASHSCOPE_API_KEY?.trim()) && (deviceVerifier.configured || clientAccess.enabled) });
         return;
       }
       if (request.method === 'GET' && request.url === '/v1/speech/health') {
-        reply(response, 200, { ok: true, configured: speech.configured && deviceVerifier.configured });
+        reply(response, 200, { ok: true, configured: speech.configured && (deviceVerifier.configured || clientAccess.enabled) });
         return;
       }
       const referralAction = /^\/v1\/referrals\/(status|generate|activate|purchase)$/.exec(request.url)?.[1];
+      const isPair = request.url === '/v1/client/pair';
       const isSpeech = request.url === '/v1/speech';
-      if (!referralAction && !isSpeech && request.url !== '/v1/summary') throw new RequestError(404, '接口不存在');
+      if (!isPair && !referralAction && !isSpeech && request.url !== '/v1/summary') throw new RequestError(404, '接口不存在');
       if (request.method !== 'POST') { reply(response, 405, { error: '只支持 POST' }, { allow: 'POST' }); return; }
-      if (!referralAction && (isSpeech ? !speech.configured : !env.DASHSCOPE_API_KEY?.trim())) {
+      if (!isPair && !referralAction && (isSpeech ? !speech.configured : !env.DASHSCOPE_API_KEY?.trim())) {
         throw new RequestError(503, isSpeech ? '语音服务尚未配置' : '总结服务尚未配置');
       }
-      if (!deviceVerifier.configured) throw new RequestError(503, '设备验证服务尚未配置');
+      if (!deviceVerifier.configured && (referralAction || !clientAccess.enabled)) throw new RequestError(503, '设备验证服务尚未配置');
       if (!(request.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
         throw new RequestError(415, '请使用 application/json');
       }
@@ -127,7 +132,7 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       const realIP = request.headers['x-real-ip'];
       if (env.TRUST_PROXY === '1' && typeof realIP === 'string' && isIP(realIP)) ip = realIP;
       if (perIP.size >= 10000 && !perIP.has(ip)) throw new RequestError(429, '请求较多，请稍后重试');
-      if ((perIP.get(ip) || 0) >= hourlyLimit || (!referralAction && dailyCount >= dailyLimit)) {
+      if ((perIP.get(ip) || 0) >= hourlyLimit || (!isPair && !referralAction && dailyCount >= dailyLimit)) {
         reply(response, 429, { error: '请求较多，请稍后重试' }, { 'retry-after': '60' }); return;
       }
       if (active >= maxConcurrent) throw new RequestError(503, '服务繁忙，请稍后重试');
@@ -136,6 +141,11 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       perIP.set(ip, (perIP.get(ip) || 0) + 1);
       persistLimits();
       const body = await readBody(request);
+      if (isPair) {
+        const grant = clientAccess.pair(body?.code);
+        reply(response, 200, grant);
+        return;
+      }
       if (referralAction) {
         if (!body || typeof body !== 'object') throw new RequestError(400, '请求内容无效');
       } else if (isSpeech) {
@@ -148,19 +158,25 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
           (typeof body.previousSummary !== 'string' || body.previousSummary.length > 20000))) {
         throw new RequestError(400, '请提供有效的对话文字');
       }
+      const bearer = request.headers.authorization;
       const deviceToken = request.headers['x-device-token'];
-      if (typeof deviceToken !== 'string' || deviceToken.length < 32 || deviceToken.length > 8192 ||
-          !/^[A-Za-z0-9+/]+={0,2}$/.test(deviceToken)) throw new RequestError(401, '设备验证失败');
-      const digest = createHash('sha256').update(deviceToken).digest('hex');
-      if (usedTokens.has(digest)) throw new RequestError(401, '设备验证凭证已使用');
-      if (usedTokens.size >= 20000) throw new RequestError(503, '服务繁忙，请稍后重试');
-      // Reserve before awaiting Apple, so concurrent replays cannot both pass.
-      usedTokens.set(digest, now());
-      persistLimits();
-      let verified;
-      try { verified = await deviceVerifier.verify(deviceToken); }
-      catch { throw new RequestError(503, '设备验证服务暂不可用'); }
-      if (!verified) throw new RequestError(401, '设备验证失败');
+      if (!referralAction && typeof bearer === 'string' && bearer.startsWith('Bearer ')) {
+        if (!clientAccess.verify(bearer.slice(7))) throw new RequestError(401, '服务连接已失效，请在设置中重新输入连接码');
+      } else {
+        if (!deviceVerifier.configured) throw new RequestError(401, '请在设置的服务连接中输入服务器连接码');
+        if (typeof deviceToken !== 'string' || deviceToken.length < 32 || deviceToken.length > 8192 ||
+            !/^[A-Za-z0-9+/]+={0,2}$/.test(deviceToken)) throw new RequestError(401, '设备验证失败');
+        const digest = createHash('sha256').update(deviceToken).digest('hex');
+        if (usedTokens.has(digest)) throw new RequestError(401, '设备验证凭证已使用');
+        if (usedTokens.size >= 20000) throw new RequestError(503, '服务繁忙，请稍后重试');
+        // Reserve before awaiting Apple, so concurrent replays cannot both pass.
+        usedTokens.set(digest, now());
+        persistLimits();
+        let verified;
+        try { verified = await deviceVerifier.verify(deviceToken); }
+        catch { throw new RequestError(503, '设备验证服务暂不可用'); }
+        if (!verified) throw new RequestError(401, '设备验证失败');
+      }
       // Recheck after awaiting Apple: another verified request may have filled the cap.
       if (referralAction) {
         reply(response, 200, await referrals.handle(referralAction, body, deviceToken));
@@ -196,8 +212,8 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       reply(response, 200, parseOutline(result?.choices?.[0]?.message?.content));
     } catch (error) {
       if (response.destroyed || response.writableEnded) return;
-      reply(response, (error instanceof RequestError || error instanceof ReferralError) ? error.status : 502,
-        { error: (error instanceof RequestError || error instanceof ReferralError) ? error.message : '服务未完成，请稍后重试' });
+      reply(response, (error instanceof RequestError || error instanceof ReferralError || error instanceof ClientAccessError) ? error.status : 502,
+        { error: (error instanceof RequestError || error instanceof ReferralError || error instanceof ClientAccessError) ? error.message : '服务未完成，请稍后重试' });
     } finally {
       if (disconnect) response.off('close', disconnect);
       if (occupied) active--;

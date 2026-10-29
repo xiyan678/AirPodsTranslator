@@ -1,5 +1,4 @@
 import Foundation
-import DeviceCheck
 
 enum CloudSpeechAPI {
     struct Body: Encodable {
@@ -20,15 +19,13 @@ enum CloudSpeechAPI {
 
     static func synthesize(_ text: String, rate: Float) async throws -> Data {
         guard let url = endpoint(summaryAddress: Bundle.main.object(forInfoDictionaryKey: "EarYiSummaryServiceURL") as? String),
-              DCDevice.current.isSupported else { throw URLError(.unsupportedURL) }
-        try Task.checkCancellation()
-        let token = try await DCDevice.current.generateToken()
+              url.host != nil else { throw URLError(.unsupportedURL) }
         try Task.checkCancellation()
         var request = URLRequest(url: url, timeoutInterval: 50)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(token.base64EncodedString(), forHTTPHeaderField: "X-Device-Token")
         request.httpBody = try JSONEncoder().encode(Body(text: text, rate: Self.rate(rate)))
+        request = try await ServiceAuthorization.authorized(request)
         let (audio, response) = try await URLSession.shared.data(for: request)
         try Task.checkCancellation()
         guard let response = response as? HTTPURLResponse, response.statusCode == 200,

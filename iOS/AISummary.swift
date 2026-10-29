@@ -146,7 +146,7 @@ enum SummaryAPIError: LocalizedError {
     case response, rejected(Int), empty, notConfigured, deviceVerification
     var errorDescription: String? {
         switch self {
-        case .deviceVerification: "设备验证未完成，请在已签名的 iPhone App 中重试。"
+        case .deviceVerification: "服务授权未完成，请在设置的“服务连接”中输入连接码后重试。"
         case .notConfigured: "默认总结服务尚未配置，请稍后重试或在设置中使用自己的模型 API。"
         case .response: "总结服务返回了无法读取的内容，请重试。"
         case .rejected(401), .rejected(403): "模型服务拒绝访问，请检查 API Key 和权限。"
@@ -212,11 +212,7 @@ enum DefaultSummaryAPI {
         var request = URLRequest(url: url, timeoutInterval: 60)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        guard DCDevice.current.isSupported else { throw SummaryAPIError.deviceVerification }
-        let deviceToken: Data
-        do { deviceToken = try await DCDevice.current.generateToken() }
-        catch { throw SummaryAPIError.deviceVerification }
-        request.setValue(deviceToken.base64EncodedString(), forHTTPHeaderField: "X-Device-Token")
+        request = try await ServiceAuthorization.authorized(request)
         request.httpBody = try JSONEncoder().encode(Body(transcript: transcript, previousSummary: existing?.plainText))
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw SummaryAPIError.response }
