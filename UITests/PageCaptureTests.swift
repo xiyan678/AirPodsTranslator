@@ -78,7 +78,7 @@ final class PageCaptureTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["实时总结"].waitForExistence(timeout: 5))
         capture("15-AI总结", app: app)
         app.buttons["关闭"].tap()
-        original.press(forDuration: 1)
+        app.staticTexts["好的，我会提前准备好资料。"].press(forDuration: 1)
         app.buttons["修改并重译"].tap()
         XCTAssertTrue(app.navigationBars["修改上一句"].waitForExistence(timeout: 5))
         capture("16-修改并重译", app: app)
