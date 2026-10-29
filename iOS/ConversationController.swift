@@ -54,18 +54,18 @@ final class ConversationController: ObservableObject {
     }
 
     let preferences = Preferences()
-    let store = ConversationStore()
+    let store: ConversationStore
     private let liveSummary = LiveSummary()
     private let dialogueSummary = LiveSummary()
     var summary: LiveSummary { mode == .listen ? liveSummary : dialogueSummary }
     let pictureInPicture = SubtitlePictureInPicture()
-    let whisper = WhisperService()
-    let capture = AudioCapture()
+    let whisper: WhisperService
+    let capture: AudioCapture
     let watch = WatchBridge()
     let subscriptions = SubscriptionManager()
     let usage = UsageMeter()
     let broadcastInbox = BroadcastAudioInbox()
-    private let translator = LocalTranslator()
+    private let services: ConversationServices
     private let player = SpeechPlayer()
     private var observers = Set<AnyCancellable>()
     private var pending: [[Float]] = []
@@ -156,7 +156,14 @@ final class ConversationController: ObservableObject {
         pictureInPicture.setPaused(next == .paused || next == .idle)
     }
 
-    init() {
+    init(capture: AudioCapture? = nil, store: ConversationStore? = nil,
+         services: ConversationServices? = nil) {
+        let audioCapture = capture ?? AudioCapture()
+        let speechRecognizer = WhisperService()
+        self.whisper = speechRecognizer
+        self.capture = audioCapture
+        self.store = store ?? ConversationStore()
+        self.services = services ?? .live(whisper: speechRecognizer, capture: audioCapture)
         preferences.$nearField
             .sink { [weak self] enabled in
                 Task { @MainActor in self?.capture.nearField = enabled }
@@ -275,7 +282,7 @@ final class ConversationController: ObservableObject {
         sessionID = activeSession
         transition(to: .preparing)
         status = "加载离线语音模型…"
-        let allowed = await AVAudioApplication.requestRecordPermission()
+        let allowed = await services.requestMicrophonePermission()
         guard sessionID == activeSession else { return }
         guard allowed else {
             sessionID = nil
@@ -285,13 +292,13 @@ final class ConversationController: ObservableObject {
             return
         }
         do {
-            try await whisper.prepare()
+            try await services.prepareSpeech()
             guard sessionID == activeSession else { return }
             capture.nearField = preferences.nearField
             capture.quality = preferences.processingMode == .quality
             capture.liveSegmentation = mode == .listen
             configureCaptureCallbacks()
-            try capture.start()
+            try services.startCapture()
             transition(to: .listening)
             status = "正在自动识别语音…"
             pending.append(contentsOf: pausedSamples)
@@ -527,7 +534,7 @@ final class ConversationController: ObservableObject {
         transition(to: .preparing)
         status = "准备屏幕音频识别…"
         do {
-            try await whisper.prepare()
+            try await services.prepareSpeech()
             guard sessionID == token else { return }
             guard broadcastInbox.active else {
                 sessionID = nil
@@ -613,7 +620,7 @@ final class ConversationController: ObservableObject {
             }
         }
         do {
-            let recognized = try await whisper.recognize(samples, language: recognitionLanguage)
+            let recognized = try await services.recognize(samples, language: recognitionLanguage)
             if sessionID == activeSession && pending.isEmpty && waitingUtterance == nil {
                 liveText = RecognizedSpeechText.cleaned(recognized.text) ?? ""
                 updateLiveTranslation(source: recognitionLanguage ?? AppLanguage.normalizedCode(recognized.language),
@@ -645,7 +652,7 @@ final class ConversationController: ObservableObject {
         previewTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let translated = try await self.translator.translate(text, from: source, to: target,
+                let translated = try await self.services.translate(text, from: source, to: target,
                     mode: self.preferences.processingMode)
                 guard !Task.isCancelled, self.previewRequestID == token,
                       self.sessionID == session, self.liveText == text else { return }
@@ -666,7 +673,7 @@ final class ConversationController: ObservableObject {
         transition(to: .recognizing)
         let selectedLanguage = recognitionLanguage
         do {
-            let recognized = try await whisper.recognize(samples, language: selectedLanguage)
+            let recognized = try await services.recognize(samples, language: selectedLanguage)
             guard sessionID == activeSession else { return }
             clearLivePreview()
             guard let recognizedText = RecognizedSpeechText.cleaned(recognized.text) else {
@@ -703,7 +710,7 @@ final class ConversationController: ObservableObject {
         do {
             transition(to: .translating)
             status = "正在翻译 \(AppLanguage.name(item.source))…"
-            let translated = try await translator.translate(item.text, from: item.source,
+            let translated = try await services.translate(item.text, from: item.source,
                                                              to: item.target, mode: preferences.processingMode,
                                                              preparedSession: preparedSession)
             guard sessionID == item.sessionID else { return }
@@ -770,7 +777,7 @@ final class ConversationController: ObservableObject {
         do {
             if !capture.isRecording {
                 if isBroadcastMode { capture.startExternal() }
-                else { try capture.start() }
+                else { try services.startCapture() }
             }
             transition(to: .listening)
             status = isBroadcastMode ? "正在识别屏幕音频…" : "正在自动识别语音…"
@@ -883,7 +890,7 @@ final class ConversationController: ObservableObject {
         guard revisionID == revision.revisionID, lines.last?.id == revision.lineID else { return }
         do {
             status = "正在重新翻译上一句…"
-            let result = try await translator.translate(revision.text, from: revision.source,
+            let result = try await services.translate(revision.text, from: revision.source,
                                                         to: revision.target, mode: preferences.processingMode,
                                                         preparedSession: preparedSession)
             guard revisionID == revision.revisionID, lines.last?.id == revision.lineID else { return }
@@ -970,24 +977,20 @@ final class ConversationController: ObservableObject {
         let resolvedTarget = inDialogue && source == preferences.preferredLanguage
             ? lastOtherLanguage : target
         textTargetLanguage = resolvedTarget
-        if source == resolvedTarget {
-            await translateTextContent(trimmed, from: source, to: resolvedTarget, requestID: requestID)
-            return
-        }
         waitingText = (trimmed, source, resolvedTarget, requestID)
-        requestLanguagePack(from: source, to: resolvedTarget)
-        if let preparation = languagePackRequest {
-            textRequestTimeout?.cancel()
-            textRequestTimeout = Task { [weak self] in
-                do { try await Task.sleep(for: .seconds(90)) }
-                catch { return }
-                self?.expireTextRequest(preparation.id)
-            }
+        textRequestTimeout?.cancel()
+        textRequestTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(90)) }
+            catch { return }
+            self?.expireTextRequest(requestID)
         }
+        // LocalTranslator 先检查系统中当前语言对是否已安装；只有明确缺少时才准备下载。
+        await translateTextContent(trimmed, from: source, to: resolvedTarget, requestID: requestID)
     }
 
     func expireTextRequest(_ preparationID: UUID) {
-        guard languagePackRequest?.id == preparationID, textRequestID != nil else { return }
+        guard let currentID = textRequestID,
+              currentID == preparationID || languagePackRequest?.id == preparationID else { return }
         textRequestID = nil
         textRequestTimeout?.cancel()
         textRequestTimeout = nil
@@ -1002,12 +1005,14 @@ final class ConversationController: ObservableObject {
                                       requestID: UUID, allowDownload: Bool = true,
                                       preparedSession: TranslationSession? = nil) async {
         guard textRequestID == requestID else { return }
+        defer { finishEndingIfReady() }
         do {
-            let result = try await translator.translate(text, from: source, to: target,
+            let result = try await services.translate(text, from: source, to: target,
                                                         mode: preferences.processingMode, preparedSession: preparedSession)
             guard textRequestID == requestID else { return }
             textRequestTimeout?.cancel()
             textRequestTimeout = nil
+            if waitingText?.requestID == requestID { waitingText = nil }
             textTranslation = result
             if textRequestIsDialogue {
                 guard textDialogueConversationID == conversationID, !hasEnded else { return }
@@ -1056,6 +1061,9 @@ final class ConversationController: ObservableObject {
                 requestLanguagePack(from: from, to: to)
                 return
             }
+            textRequestTimeout?.cancel()
+            textRequestTimeout = nil
+            if waitingText?.requestID == requestID { waitingText = nil }
             errorMessage = error.localizedDescription
         }
     }
@@ -1106,7 +1114,7 @@ final class ConversationController: ObservableObject {
                                     allowDownload: Bool = true, preparedSession: TranslationSession? = nil) async {
         guard imageRequestID == requestID else { return }
         do {
-            let translation = try await translator.translate(text, from: source, to: target,
+            let translation = try await services.translate(text, from: source, to: target,
                                                               mode: preferences.processingMode,
                                                               preparedSession: preparedSession)
             guard imageRequestID == requestID else { return }

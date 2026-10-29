@@ -15,6 +15,18 @@ final class RegressionTests: XCTestCase {
         return url
     }
 
+    private func controllerWithoutLanguagePacks() -> ConversationController {
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true }, startCapture: {},
+            recognition: { _, _ in (text: "", language: "en") },
+            translation: { text, source, target, _, _ in
+                if source == target { return text }
+                throw TranslatorError.languagePackRequired(source, target)
+            }
+        )
+        return ConversationController(services: services)
+    }
+
     func testTextCompletionPreservesNewDraftAndClearsOnlySubmittedDraft() async {
         let controller = ConversationController()
         controller.selectMode(.dialogue)
@@ -74,7 +86,7 @@ final class RegressionTests: XCTestCase {
     }
 
     func testClearingPendingKeyboardTranslationDoesNotLeaveEndWaiting() async {
-        let controller = ConversationController()
+        let controller = controllerWithoutLanguagePacks()
         controller.selectMode(.dialogue)
         controller.preferences.preferredLanguage = "zh"
         controller.lastOtherLanguage = "en"
@@ -90,7 +102,7 @@ final class RegressionTests: XCTestCase {
     }
 
     func testOldLanguagePreparationFailureCannotAffectNewPage() async {
-        let controller = ConversationController()
+        let controller = controllerWithoutLanguagePacks()
         controller.selectMode(.dialogue)
         controller.preferences.preferredLanguage = "zh"
         controller.lastOtherLanguage = "en"
@@ -107,7 +119,7 @@ final class RegressionTests: XCTestCase {
     }
 
     func testCancellingLanguageDownloadKeepsDraftAndAllowsRetryWithoutAlert() async {
-        let controller = ConversationController()
+        let controller = controllerWithoutLanguagePacks()
         controller.selectMode(.dialogue)
         controller.preferences.preferredLanguage = "zh"
         controller.lastOtherLanguage = "en"
@@ -132,7 +144,7 @@ final class RegressionTests: XCTestCase {
     }
 
     func testRealLanguagePreparationFailureStillReportsError() async {
-        let controller = ConversationController()
+        let controller = controllerWithoutLanguagePacks()
         controller.selectMode(.dialogue)
         controller.preferences.preferredLanguage = "zh"
         controller.lastOtherLanguage = "en"
@@ -291,7 +303,7 @@ final class RegressionTests: XCTestCase {
     }
 
     func testStalledTextRequestCanExpireAndBeResent() async {
-        let controller = ConversationController()
+        let controller = controllerWithoutLanguagePacks()
         controller.selectMode(.dialogue)
         controller.preferences.preferredLanguage = "zh"
         controller.lastOtherLanguage = "en"
@@ -398,6 +410,23 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(capture.takePendingSpeech()?.count, 3_200)
         XCTAssertNil(capture.takePendingSpeech())
         capture.stop()
+    }
+
+    func testQueuedAudioFromStoppedCaptureCannotEnterRestartedCapture() throws {
+        let capture = AudioCapture()
+        capture.startExternal()
+        let oldRecording = try XCTUnwrap(capture.recordingID)
+        capture.stop()
+        capture.startExternal()
+        let currentRecording = try XCTUnwrap(capture.recordingID)
+        XCTAssertNotEqual(oldRecording, currentRecording)
+        capture.receive(Array(repeating: 0.2, count: 16_000), recordingID: oldRecording)
+        XCTAssertNil(capture.takePendingSpeech(), "暂停前排队的音频不能成为继续后的新语音")
+        capture.receive(Array(repeating: 0.2, count: 3_200), recordingID: currentRecording)
+        XCTAssertEqual(capture.takePendingSpeech()?.count, 3_200)
+        capture.stop()
+        capture.receive(Array(repeating: 0.2, count: 16_000), recordingID: currentRecording)
+        XCTAssertNil(capture.takePendingSpeech())
     }
 
     func testSilenceDoesNotBecomeAnUtterance() {

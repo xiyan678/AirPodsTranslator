@@ -296,6 +296,7 @@ final class LocalTranslator {
 @MainActor
 final class AudioCapture: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
+    private(set) var recordingID: UUID?
     @Published private(set) var level: Float = 0
     var onPartial: (([Float]) -> Void)?
     var onUtterance: (([Float]) -> Void)?
@@ -330,6 +331,7 @@ final class AudioCapture: NSObject, ObservableObject {
 
     func startExternal() {
         guard !isRecording else { return }
+        recordingID = UUID()
         isRecording = true
         resetUtterance()
         samples = []
@@ -345,10 +347,20 @@ final class AudioCapture: NSObject, ObservableObject {
         frameLevels = []
     }
 
-    func feedExternal(_ chunk: [Float]) { append(chunk) }
+    func feedExternal(_ chunk: [Float]) {
+        guard let recordingID else { return }
+        receive(chunk, recordingID: recordingID)
+    }
+
+    /// 录音线程已经排队的旧回调，不能在停止后重新启动时进入新录音。
+    func receive(_ chunk: [Float], recordingID: UUID) {
+        guard self.recordingID == recordingID else { return }
+        append(chunk)
+    }
 
     func start() throws {
         guard !isRecording else { return }
+        let recordingID = UUID()
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: nearField ? .voiceChat : .default,
                                 options: [.allowBluetoothA2DP])
@@ -376,7 +388,7 @@ final class AudioCapture: NSObject, ObservableObject {
             guard conversionError == nil, output.frameLength > 0,
                   let channel = output.floatChannelData?.pointee else { return }
             let chunk = Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
-            Task { @MainActor [weak self] in self?.append(chunk) }
+            Task { @MainActor [weak self] in self?.receive(chunk, recordingID: recordingID) }
         }
         do { try next.start() }
         catch {
@@ -387,10 +399,12 @@ final class AudioCapture: NSObject, ObservableObject {
         resetUtterance()
         samples = []
         noiseFloor = -60
+        self.recordingID = recordingID
         isRecording = true
     }
 
     func stop() {
+        recordingID = nil
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
