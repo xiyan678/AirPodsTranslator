@@ -244,7 +244,7 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(RecognizedSpeechText.cleaned("<|0.00|> Hello<|1.00|>"), "Hello")
     }
 
-    func testLowConfidenceAndRepetitiveSegmentsAreDropped() {
+    func testConfidenceAppliesToWholeUtteranceAndExplicitNoiseIsDropped() {
         let segments = [
             RecognizedSegment(text: " 你好", avgLogprob: -0.3, compressionRatio: 1.2, noSpeechProb: 0),
             RecognizedSegment(text: " 谢谢观看", avgLogprob: -1.4, compressionRatio: 1.1, noSpeechProb: 0),
@@ -253,7 +253,7 @@ final class RegressionTests: XCTestCase {
             RecognizedSegment(text: " [BLANK_AUDIO]", avgLogprob: -0.1, compressionRatio: 1.0, noSpeechProb: 0),
             RecognizedSegment(text: " 请给他一点掌声", avgLogprob: -0.5, compressionRatio: 1.3, noSpeechProb: 0)
         ]
-        XCTAssertEqual(SpeechSegmentFilter.joinedText(segments), "你好请给他一点掌声")
+        XCTAssertEqual(SpeechSegmentFilter.joinedText(segments), "你好谢谢观看请给他一点掌声")
         XCTAssertEqual(SpeechSegmentFilter.joinedText([segments[1], segments[4]]), "")
     }
 
@@ -384,10 +384,11 @@ final class RegressionTests: XCTestCase {
         }
     }
 
-    func testQualityModeKeepsALongSentenceTogetherPastTwelveSeconds() {
+    func testBothModesKeepALongSentenceTogetherPastTwelveSeconds() {
+        for quality in [false, true] {
         let capture = AudioCapture()
         capture.liveSegmentation = true
-        capture.quality = true
+        capture.quality = quality
         var utterances: [[Float]] = []
         capture.onUtterance = { utterances.append($0) }
         capture.startExternal()
@@ -402,6 +403,7 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(utterances.count, 1)
         XCTAssertEqual(utterances.first?.count, 16_000 * 14 + 3_200 + 4_800)
         capture.stop()
+        }
     }
 
     func testPreviewWaitsForAgreementAndNeverTranslatesPartialEnglishWords() {
@@ -442,14 +444,20 @@ final class RegressionTests: XCTestCase {
         var utterances: [[Float]] = []
         capture.onUtterance = { utterances.append($0) }
         capture.startExternal()
-        capture.feedExternal(Array(repeating: 0.2, count: 112_000))  // 7 秒
+        for _ in 0..<108 {
+            capture.feedExternal(Array(repeating: 0.2, count: 2_560))
+            capture.feedExternal(Array(repeating: 0.02, count: 1_440))
+        } // 27 秒连续讲话
         capture.feedExternal(Array(repeating: 0.01, count: 1_600))   // 0.1 秒轻声（词间）
-        capture.feedExternal(Array(repeating: 0.2, count: 48_000))   // 再讲 3 秒，超过 8 秒上限
+        for _ in 0..<12 {
+            capture.feedExternal(Array(repeating: 0.2, count: 2_560))
+            capture.feedExternal(Array(repeating: 0.02, count: 1_440))
+        } // 再讲 3 秒，超过 28 秒安全上限
         XCTAssertEqual(utterances.count, 1)
-        XCTAssertTrue((112_000...113_600).contains(utterances.first?.count ?? 0),
+        XCTAssertTrue((16_000 * 26...16_000 * 28).contains(utterances.first?.count ?? 0),
                       "应在低音量区间切开，而不是切在下一词的强语音上")
         let rest = capture.takePendingSpeech()
-        XCTAssertEqual((utterances.first?.count ?? 0) + (rest?.count ?? 0), 112_000 + 1_600 + 48_000,
+        XCTAssertEqual((utterances.first?.count ?? 0) + (rest?.count ?? 0), 16_000 * 30 + 1_600,
                        "切开后前后两段加起来不能丢音频")
         capture.stop()
     }

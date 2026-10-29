@@ -338,6 +338,8 @@ final class AudioCapture: NSObject, ObservableObject {
     private var samplesSincePartial = 0
     /// 环境底噪估计（dB）。持续的风扇声、空调声会逐渐抬高底噪，不再被当成说话。
     private var noiseFloor: Float = -60
+    private var recentEnergy: [(decibels: Float, samples: Int)] = []
+    private var recentEnergySamples = 0
 
     private static let sampleRate = 16_000
     private static let frameLength = 320                 // 20 ms
@@ -356,6 +358,8 @@ final class AudioCapture: NSObject, ObservableObject {
         resetUtterance()
         samples = []
         noiseFloor = -60
+        recentEnergy = []
+        recentEnergySamples = 0
     }
 
     private func resetUtterance() {
@@ -379,6 +383,31 @@ final class AudioCapture: NSObject, ObservableObject {
         guard isRecording, windowID == window, count > 0, count <= samples.count else { return false }
         retainSamples(after: count)
         return true
+    }
+
+    /// Punctuation alone is not an acoustic boundary. Require a short pause near
+    /// the recognizer's timestamp and look-ahead audio before trimming the window.
+    func sentenceBoundary(near count: Int, window: UUID) -> Int? {
+        guard windowID == window, count > 0, samples.count >= count + 3_200 else { return nil }
+        let lower = max(0, count - 1_600), upper = min(samples.count, count + 4_800)
+        var start = 0
+        var runStart: Int?
+        var runs: [(start: Int, end: Int)] = []
+        for frame in frameLevels {
+            let frameStart = start
+            start = frame.end
+            guard frame.end > lower, frameStart < upper else { continue }
+            if !frame.voiced {
+                if runStart == nil { runStart = max(lower, frameStart) }
+            } else if let began = runStart {
+                runs.append((began, min(frameStart, upper)))
+                runStart = nil
+            }
+        }
+        if let began = runStart { runs.append((began, upper)) }
+        return runs.filter { $0.end - $0.start >= 2_560 && $0.end > count && $0.start <= count + 3_200 }
+            .map { max(count, ($0.start + $0.end) / 2) }
+            .min(by: { abs($0 - count) < abs($1 - count) })
     }
 
     /// 录音线程已经排队的旧回调，不能在停止后重新启动时进入新录音。
@@ -428,6 +457,8 @@ final class AudioCapture: NSObject, ObservableObject {
         resetUtterance()
         samples = []
         noiseFloor = -60
+        recentEnergy = []
+        recentEnergySamples = 0
         self.recordingID = recordingID
         isRecording = true
     }
@@ -474,9 +505,21 @@ final class AudioCapture: NSObject, ObservableObject {
         let db = Self.decibels(rms)
         let absoluteThreshold: Float = nearField ? -35 : -42
         let voiced = db > max(absoluteThreshold, noiseFloor + Self.noiseMargin)
-        // 底噪快速下降、缓慢上升（约 6 秒追上持续噪声），说话间隙会把它拉回真实底噪。
-        let rate: Float = db < noiseFloor ? 0.3 : 0.003
-        noiseFloor = min(-20, max(-90, noiseFloor + (db - noiseFloor) * rate))
+        recentEnergy.append((db, frame.count))
+        recentEnergySamples += frame.count
+        while let first = recentEnergy.first, recentEnergySamples - first.samples >= Self.sampleRate {
+            recentEnergySamples -= first.samples
+            recentEnergy.removeFirst()
+        }
+        let range = (recentEnergy.map(\.decibels).max() ?? db) - (recentEnergy.map(\.decibels).min() ?? db)
+        let stationary = recentEnergySamples >= Self.sampleRate && range <= 1.5
+        // Active, changing speech must not train the background estimate upwards.
+        // Steady background noise may still adapt after a full second of stable energy.
+        if db < noiseFloor || !voiced || stationary {
+            let rate: Float = db < noiseFloor ? 0.3 : 0.003
+            let adjustedRate = 1 - pow(1 - rate, Float(frame.count) / Float(Self.frameLength))
+            noiseFloor = min(-20, max(-90, noiseFloor + (db - noiseFloor) * adjustedRate))
+        }
 
         samples.append(contentsOf: frame)
         if voiced {
@@ -496,7 +539,7 @@ final class AudioCapture: NSObject, ObservableObject {
         let hasEnoughSpeech = voicedSampleCount >= Self.minimumVoicedSamples
         let silenceLimit = Int(Double(Self.sampleRate) * (quality ? 1.5 : 1.2))
         let maximumSamples = liveSegmentation
-            ? Self.sampleRate * (quality ? 28 : 8)
+            ? Self.sampleRate * 28
             : Self.sampleRate * (quality ? 30 : 20)
         let partialInterval = Int(Double(Self.sampleRate) * (quality ? 1.2 : 0.8))
         // 换气不等于句末。预览可持续刷新，最终翻译和播报必须等完整停顿。

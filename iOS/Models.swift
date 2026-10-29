@@ -233,8 +233,8 @@ struct RecognizedSegment {
 }
 
 enum SpeechSegmentFilter {
-    /// 与 Whisper 官方默认阈值一致。WhisperKit 用这些阈值触发温度回退，
-    /// 但回退用尽后仍会返回最后一次的低质量结果，所以这里需要再过滤一次。
+    /// The decoder already retries low-confidence output. Apply confidence to the
+    /// whole utterance, rather than deleting individual uncertain words from it.
     static let minimumAverageLogprob: Float = -1.0
     static let maximumCompressionRatio: Float = 2.4
     /// WhisperKit 1.1.0 的 noSpeechProb 恒为 0（TextDecoder 中标注为 TODO），
@@ -243,13 +243,19 @@ enum SpeechSegmentFilter {
 
     static func isSpeech(_ segment: RecognizedSegment) -> Bool {
         guard segment.avgLogprob.isFinite, segment.compressionRatio.isFinite else { return false }
-        if segment.noSpeechProb > maximumNoSpeechProb { return false }
+        if segment.noSpeechProb > maximumNoSpeechProb && segment.avgLogprob < minimumAverageLogprob { return false }
         if segment.compressionRatio > maximumCompressionRatio { return false }
-        if segment.avgLogprob < minimumAverageLogprob { return false }
         return RecognizedSpeechText.cleaned(segment.text) != nil
     }
 
     static func joinedText(_ segments: [RecognizedSegment]) -> String {
-        SpeechTextJoiner.join(segments.filter(isSpeech).map(\.text))
+        let candidates = segments.filter(isSpeech)
+        let totalWeight = candidates.reduce(0) { $0 + max(1, $1.text.count) }
+        guard totalWeight > 0 else { return "" }
+        let confidence = candidates.reduce(Float(0)) {
+            $0 + $1.avgLogprob * Float(max(1, $1.text.count))
+        } / Float(totalWeight)
+        guard confidence >= minimumAverageLogprob else { return "" }
+        return SpeechTextJoiner.join(candidates.map(\.text))
     }
 }

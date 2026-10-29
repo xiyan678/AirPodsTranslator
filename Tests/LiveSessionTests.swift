@@ -135,7 +135,8 @@ final class LiveSessionTests: XCTestCase {
         let store = ConversationStore(directory: directory, summarize: { _ in "演讲" })
         let controller = ConversationController(capture: capture, store: store, services: services)
         await controller.start()
-        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        capture.feedExternal(Array(repeating: 0.2, count: 14_400) + Array(repeating: 0, count: 3_200) +
+                             Array(repeating: 0.2, count: 14_400))
         await eventually { controller.lines.count == 1 }
         XCTAssertTrue(capture.isRecording)
         XCTAssertEqual(controller.lines.map(\.original), ["The first sentence."])

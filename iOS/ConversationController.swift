@@ -658,8 +658,9 @@ final class ConversationController: ObservableObject {
                 if mode == .listen, let prefix = recognized.confirmedPrefix,
                    let prefixText = RecognizedSpeechText.cleaned(prefix.text), prefix.sampleCount <= samples.count,
                    AppLanguage.all.contains(where: { $0.code == source }),
-                   capture.commitPrefix(prefix.sampleCount, window: window) {
-                    services.commitRecognition?(prefix, source)
+                   let cut = capture.sentenceBoundary(near: prefix.sampleCount, window: window),
+                   capture.commitPrefix(cut, window: window) {
+                    services.commitRecognition?(.init(text: prefix.text, sampleCount: cut), source)
                     recognitionWindow = nil
                     latestPartial = nil
                     clearLivePreview()
