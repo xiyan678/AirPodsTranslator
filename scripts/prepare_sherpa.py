@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "ThirdParty/SherpaOnnx/Artifacts/paired-ios"
 DIGEST = "63572187c200d70e1b09b47f1bf4e3435ea1c9ced4ca656268fa7d0b94e12610"
 URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.3/sherpa-onnx-v1.13.3-ios-no-tts.tar.bz2"
-LAYOUT = 3
+LAYOUT = 4
 
 
 def onnx_module_map(headers: Path):
@@ -29,7 +29,11 @@ def onnx_module_map(headers: Path):
             continue
         declared.add(name)
         pending.extend(re.findall(r'^\s*#\s*include\s*"([^"\n]+)"', path.read_text(), re.MULTILINE))
-    declarations = "\n".join(f'  header "{name}"' for name in sorted(declared))
+    # EP declarations have no include guard and are already expanded by c_api.h.
+    # Mark dependent headers textual: module ownership without a second entry point.
+    declarations = "\n".join(
+        f'  {"" if name == "onnxruntime_c_api.h" else "textual "}header "{name}"'
+        for name in sorted(declared))
     return f"framework module onnxruntime {{\n{declarations}\n  export *\n}}\n"
 
 
