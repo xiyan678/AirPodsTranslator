@@ -340,7 +340,7 @@ struct SummarySettingsSection: View {
             Toggle(isOn: $settings.useCustom) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("使用自己的模型 API")
-                    Text("关闭或未填写 Key 时，使用默认 Qwen 总结服务。")
+                    Text("关闭或未填写 Key 时，将使用内置 Qwen 默认服务。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

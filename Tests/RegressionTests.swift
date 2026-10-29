@@ -5,35 +5,15 @@ import AVFoundation
 
 @MainActor
 final class RegressionTests: XCTestCase {
-    func testVoicePreferenceIsStoredSeparatelyForEachLanguage() {
-        let defaults = UserDefaults.standard
-        let previous = defaults.object(forKey: "voiceIdentifiers")
-        defer {
-            if let previous { defaults.set(previous, forKey: "voiceIdentifiers") }
-            else { defaults.removeObject(forKey: "voiceIdentifiers") }
-        }
-        defaults.removeObject(forKey: "voiceIdentifiers")
-        let preferences = Preferences()
-        preferences.setVoiceIdentifier("english-voice", for: "en-US")
-        preferences.setVoiceIdentifier("chinese-voice", for: "zh-CN")
-        XCTAssertEqual(preferences.voiceIdentifier(for: "en_GB"), "english-voice")
-        XCTAssertEqual(preferences.voiceIdentifier(for: "zh-Hans"), "chinese-voice")
-        XCTAssertEqual(Preferences().voiceIdentifier(for: "en"), "english-voice")
-        preferences.setVoiceIdentifier(nil, for: "en")
-        XCTAssertNil(Preferences().voiceIdentifier(for: "en"))
-        XCTAssertEqual(Preferences().voiceIdentifier(for: "zh"), "chinese-voice")
-    }
-
-    func testRemovedOrWrongLanguageVoiceFallsBackToTheTargetLanguage() throws {
-        guard let english = SpeechPlayer.voice(for: "en"),
-              let chinese = SpeechPlayer.voice(for: "zh") else {
-            throw XCTSkip("模拟器未提供中英语音")
-        }
-        XCTAssertEqual(SpeechPlayer.voice(for: "en", identifier: english.identifier)?.identifier, english.identifier)
-        let wrong = try XCTUnwrap(SpeechPlayer.voice(for: "en", identifier: chinese.identifier))
-        XCTAssertEqual(AppLanguage.normalizedCode(wrong.language), "en")
-        let removed = try XCTUnwrap(SpeechPlayer.voice(for: "zh", identifier: "uninstalled-voice"))
-        XCTAssertEqual(AppLanguage.normalizedCode(removed.language), "zh")
+    func testCloudSpeechUsesSiblingEndpointAndRejectsUnsecuredAddresses() {
+        XCTAssertEqual(CloudSpeechAPI.endpoint(summaryAddress: "https://ai.duwang.win/v1/summary")?.absoluteString,
+                       "https://ai.duwang.win/v1/speech")
+        XCTAssertNil(CloudSpeechAPI.endpoint(summaryAddress: "http://ai.duwang.win/v1/summary"))
+        XCTAssertNil(CloudSpeechAPI.endpoint(summaryAddress: "https://ai.duwang.win/v1/summary?secret=x"))
+        XCTAssertEqual(CloudSpeechAPI.rate(.nan), 1)
+        XCTAssertEqual(CloudSpeechAPI.rate(0.48), 1, accuracy: 0.001)
+        XCTAssertEqual(CloudSpeechAPI.rate(10), 2)
+        XCTAssertEqual(CloudSpeechAPI.rate(-1), 0.5)
     }
 
     private func line(_ text: String) -> TranscriptLine {

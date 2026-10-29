@@ -11,3 +11,4 @@ DerivedData/
 
 ThirdParty/SherpaOnnx/Artifacts/
 __pycache__/
+node_modules/

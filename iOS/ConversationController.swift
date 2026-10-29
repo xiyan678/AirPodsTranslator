@@ -292,13 +292,13 @@ final class ConversationController: ObservableObject {
         guard !isEnding, !isRunning, !isPreparing, phase != .replaying else { return }
         let requestedConversation = conversationID
         let requestedMode = mode
-        if !subscriptions.isPro &&
+        if !subscriptions.hasUnlimitedAccess &&
             (mode == .listen ? usage.remainingLiveSeconds == 0 : usage.remainingDialogueLines == 0) {
             await subscriptions.refresh()
             guard conversationID == requestedConversation, mode == requestedMode,
                   !isEnding, !isRunning, !isPreparing, phase != .replaying else { return }
         }
-        guard subscriptions.isPro || (mode == .listen ? usage.remainingLiveSeconds > 0 : usage.remainingDialogueLines > 0) else {
+        guard subscriptions.hasUnlimitedAccess || (mode == .listen ? usage.remainingLiveSeconds > 0 : usage.remainingDialogueLines > 0) else {
             showPaywall = true
             status = "今日免费额度已用完"
             return
@@ -371,7 +371,7 @@ final class ConversationController: ObservableObject {
         activeSamples = nil
         pausedSamples.append(contentsOf: pending)
         if let tail = capture.takePendingSpeech() { pausedSamples.append(tail) }
-        usage.track(active: !subscriptions.isPro && mode == .listen && capture.isRecording)
+        usage.track(active: !subscriptions.hasUnlimitedAccess && mode == .listen && capture.isRecording)
         sessionID = nil
         playbackID = nil
         isBroadcastMode = false
@@ -422,7 +422,7 @@ final class ConversationController: ObservableObject {
         pausedSamples = []
         isEnding = true
         saveWhenEnded = save || preferences.saveAutomatically
-        usage.track(active: !subscriptions.isPro && mode == .listen && capture.isRecording)
+        usage.track(active: !subscriptions.hasUnlimitedAccess && mode == .listen && capture.isRecording)
         if let tail = capture.takePendingSpeech() { pending.append(tail) }
         capture.stop()
         latestPartial = nil
@@ -525,8 +525,7 @@ final class ConversationController: ObservableObject {
         }
         let output: AudioDestination = output ?? (line.isMine ? .speaker : destination)
         let played = player.speak(line.translated, language: line.targetLanguage,
-                                  rate: preferences.speechRate, destination: output,
-                                  voiceIdentifier: preferences.voiceIdentifier(for: line.targetLanguage)) { [weak self] in
+                                  rate: preferences.speechRate, destination: output) { [weak self] in
             guard let self else { return }
             guard self.sessionID == activeSession, self.playbackID == token else { return }
             self.playbackID = nil
@@ -575,7 +574,7 @@ final class ConversationController: ObservableObject {
             return
         }
         usage.refreshDay()
-        guard subscriptions.isPro || usage.remainingLiveSeconds > 0 else {
+        guard subscriptions.hasUnlimitedAccess || usage.remainingLiveSeconds > 0 else {
             showPaywall = true
             return
         }
@@ -613,8 +612,8 @@ final class ConversationController: ObservableObject {
     }
 
     private func consumeUsage() {
-        usage.track(active: !subscriptions.isPro && mode == .listen && capture.isRecording)
-        guard !subscriptions.isPro, isRunning, mode == .listen,
+        usage.track(active: !subscriptions.hasUnlimitedAccess && mode == .listen && capture.isRecording)
+        guard !subscriptions.hasUnlimitedAccess, isRunning, mode == .listen,
               usage.remainingLiveSeconds == 0 else { return }
         end()
         status = "今日免费同传时长已用完"
@@ -622,7 +621,7 @@ final class ConversationController: ObservableObject {
     }
 
     private func checkDialogueQuota() -> Bool {
-        guard mode == .dialogue, !subscriptions.isPro else { return true }
+        guard mode == .dialogue, !subscriptions.hasUnlimitedAccess else { return true }
         usage.recordDialogueLine()
         guard usage.remainingDialogueLines == 0 else { return true }
         end()
@@ -931,8 +930,7 @@ final class ConversationController: ObservableObject {
             if keepListening {
                 // 同传按顺序播报，识别继续处理下一句，不等待整段朗读结束。
                 let queued = services.enqueueSpeech?(translated, item.target, preferences.speechRate) ??
-                    player.enqueue(translated, language: item.target, rate: preferences.speechRate,
-                                   voiceIdentifier: preferences.voiceIdentifier(for: item.target), destination: output)
+                    player.enqueue(translated, language: item.target, rate: preferences.speechRate, destination: output)
                 if !queued { errorMessage = "当前设备没有\(AppLanguage.name(item.target))语音，译文已显示" }
                 if !backgroundLive { transition(to: .listening) }
                 updateOutputRoute()
@@ -949,7 +947,6 @@ final class ConversationController: ObservableObject {
                 let played = player.speak(translated, language: item.target,
                                           rate: preferences.speechRate,
                                           destination: output,
-                                          voiceIdentifier: preferences.voiceIdentifier(for: item.target),
                                           keepInputActive: keepListening) {
                     continuation.resume()
                 }
@@ -1187,7 +1184,7 @@ final class ConversationController: ObservableObject {
         errorMessage = nil
         if inDialogue {
             usage.refreshDay()
-            guard subscriptions.isPro || usage.remainingDialogueLines > 0 else {
+            guard subscriptions.hasUnlimitedAccess || usage.remainingDialogueLines > 0 else {
                 showPaywall = true
                 return
             }
@@ -1276,7 +1273,7 @@ final class ConversationController: ObservableObject {
                 }
                 deliveredDialogueTextID = requestID
                 watch.publish(running: isRunning, latest: result)
-                if !subscriptions.isPro { usage.recordDialogueLine() }
+                if !subscriptions.hasUnlimitedAccess { usage.recordDialogueLine() }
             }
             guard preferences.autoReadAloud else { return }
             guard !isEnding else { return }
@@ -1290,8 +1287,7 @@ final class ConversationController: ObservableObject {
             }
             // .earphones 使用 playback 会话，跟随系统输出；未连接耳机时由手机播放。
             let played = player.speak(result, language: target, rate: preferences.speechRate,
-                                      destination: .earphones,
-                                      voiceIdentifier: preferences.voiceIdentifier(for: target)) { [weak self] in
+                                      destination: .earphones) { [weak self] in
                 guard let self, shouldResumeCapture, self.sessionID == activeSession,
                       !self.draining else { return }
                 if self.pending.isEmpty { self.resumeCapture() }

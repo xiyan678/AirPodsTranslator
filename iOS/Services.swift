@@ -655,162 +655,130 @@ final class AudioCapture: NSObject, ObservableObject {
 }
 
 @MainActor
-final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
+final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
+    private var audioPlayer: AVAudioPlayer?
+    private var loading: Task<Void, Never>?
+    private var generation = UUID()
     private var completions: [() -> Void] = []
     @Published private(set) var isPlaying = false
     private var activeUtteranceID: ObjectIdentifier?
-    private var queuedUtteranceIDs = Set<ObjectIdentifier>()
-    private struct QueuedSpeech {
-        let text: String
-        let voice: AVSpeechSynthesisVoice
-        let rate: Float
-    }
-    private var waitingSpeech: [QueuedSpeech] = []
+    private struct Item { let text: String; let language: String; let rate: Float }
+    private var waiting: [Item] = []
+    private var busy = false
     override init() { super.init(); synthesizer.delegate = self }
 
-    /// 当前输出是否为耳机类设备（AirPods、蓝牙耳机、有线耳机）。
     static var headphonesConnected: Bool {
-        let headphonePorts: Set<AVAudioSession.Port> = [.headphones, .bluetoothA2DP, .bluetoothLE, .bluetoothHFP]
-        return AVAudioSession.sharedInstance().currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
+        let ports: Set<AVAudioSession.Port> = [.headphones, .bluetoothA2DP, .bluetoothLE, .bluetoothHFP]
+        return AVAudioSession.sharedInstance().currentRoute.outputs.contains { ports.contains($0.portType) }
     }
 
-    /// Reuse capture's audio session; enqueueing must never stop capture or change category.
     @discardableResult
-    func enqueue(_ text: String, language: String, rate: Float, voiceIdentifier: String? = nil,
+    func enqueue(_ text: String, language: String, rate: Float,
                  destination: AudioDestination = .earphones) -> Bool {
-        guard let voice = Self.voice(for: language, identifier: voiceIdentifier) else { return false }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        do {
-            try AVAudioSession.sharedInstance().overrideOutputAudioPort(destination == .speaker ? .speaker : .none)
-        } catch { return false }
-        waitingSpeech.append(QueuedSpeech(text: text, voice: voice, rate: rate))
+        // Capture owns the session while simultaneous translation is running.
+        do { try AVAudioSession.sharedInstance().overrideOutputAudioPort(destination == .speaker ? .speaker : .none) }
+        catch { return false }
+        waiting.append(Item(text: text, language: language, rate: rate))
         isPlaying = true
-        playNextQueuedSpeech()
+        playNext()
         return true
     }
 
-    private func playNextQueuedSpeech() {
-        guard queuedUtteranceIDs.isEmpty, activeUtteranceID == nil, !waitingSpeech.isEmpty else { return }
-        let backlog = waitingSpeech.count > 1
-            ? waitingSpeech.reduce(0.0) { $0 + SpeechBacklog.estimatedSeconds($1.text, rate: $1.rate) } : 0
-        let next = waitingSpeech.removeFirst()
-        let utterance = AVSpeechUtterance(string: next.text)
-        utterance.voice = next.voice
-        utterance.rate = SpeechBacklog.adjustedRate(next.rate, backlog: backlog)
-        queuedUtteranceIDs.insert(ObjectIdentifier(utterance))
-        isPlaying = true
-        synthesizer.speak(utterance)
-    }
-
-    /// - Parameter keepInputActive: 为 true 时沿用录音中的 playAndRecord 会话，不切换音频类别，
-    ///   这样播报译文的同时麦克风继续收音。只应在输出到耳机时使用，外放会把译文录回去。
     @discardableResult
     func speak(_ text: String, language: String, rate: Float, destination: AudioDestination,
-               voiceIdentifier: String? = nil, keepInputActive: Bool = false,
-               done: @escaping () -> Void) -> Bool {
-        // 替换播放时保留完成回调，等最后一条语音结束才恢复收音。
-        isPlaying = true
-        activeUtteranceID = nil
-        queuedUtteranceIDs.removeAll()
-        waitingSpeech.removeAll()
+               keepInputActive: Bool = false, done: @escaping () -> Void) -> Bool {
+        // Retain pending completion handlers across replacement playback.
+        cancelPlayback()
         completions.append(done)
-        synthesizer.stopSpeaking(at: .immediate)
-        guard let voice = Self.voice(for: language, identifier: voiceIdentifier) else {
-            finish()
-            return false
-        }
-        let session = AVAudioSession.sharedInstance()
-        if keepInputActive {
-            let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = voice
-            utterance.rate = rate
-            activeUtteranceID = ObjectIdentifier(utterance)
-            synthesizer.speak(utterance)
-            return true
-        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { finish(); return false }
         do {
-            if destination == .earphones {
-                // Playback follows the system's selected headphones / AirPods route.
-                try session.setCategory(.playback, mode: .spokenAudio, options: [])
-            } else {
-                try session.setCategory(.playAndRecord, mode: .default,
-                                        options: [.allowBluetoothA2DP, .defaultToSpeaker])
+            let session = AVAudioSession.sharedInstance()
+            if !keepInputActive {
+                if destination == .earphones {
+                    try session.setCategory(.playback, mode: .spokenAudio, options: [])
+                } else {
+                    try session.setCategory(.playAndRecord, mode: .default,
+                                            options: [.allowBluetoothA2DP, .defaultToSpeaker])
+                }
+                try session.setActive(true)
             }
-            try session.setActive(true)
-        } catch {
-            finish()
-            return false
-        }
-        do {
             if destination == .speaker { try session.overrideOutputAudioPort(.speaker) }
-        } catch {
-            finish()
-            return false
-        }
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = voice
-        utterance.rate = rate
-        activeUtteranceID = ObjectIdentifier(utterance)
-        synthesizer.speak(utterance)
+            else if keepInputActive { try session.overrideOutputAudioPort(.none) }
+        } catch { finish(); return false }
+        waiting = [Item(text: text, language: language, rate: rate)]
+        isPlaying = true
+        playNext()
         return true
     }
 
-    static func voice(for language: String, identifier: String? = nil) -> AVSpeechSynthesisVoice? {
-        let code = AppLanguage.normalizedCode(language)
-        if let identifier, let selected = AVSpeechSynthesisVoice(identifier: identifier),
-           AppLanguage.normalizedCode(selected.language) == code { return selected }
-        let systemVoice = AVSpeechSynthesisVoice(language: language)
-        let available = AVSpeechSynthesisVoice.speechVoices()
-            .filter { AppLanguage.normalizedCode($0.language) == code }
-        // Prefer the requested/system locale: a higher-quality voice from another
-        // Chinese region can have a different pronunciation, not just a new timbre.
-        let matchingLocale = available.filter { $0.language == systemVoice?.language }
-        let candidates = matchingLocale.isEmpty ? available : matchingLocale
-        return candidates.sorted {
-            if $0.identifier == $1.identifier { return false }
-            if $0.quality.rawValue != $1.quality.rawValue { return $0.quality.rawValue > $1.quality.rawValue }
-            if $0.identifier == systemVoice?.identifier { return true }
-            if $1.identifier == systemVoice?.identifier { return false }
-            return $0.identifier < $1.identifier
-        }.first ?? systemVoice
+    private func playNext() {
+        guard !busy else { return }
+        guard !waiting.isEmpty else { finish(); return }
+        busy = true
+        let backlog = waiting.count > 1 ? waiting.reduce(0.0) {
+            $0 + SpeechBacklog.estimatedSeconds($1.text, rate: $1.rate)
+        } : 0
+        let item = waiting.removeFirst()
+        let rate = SpeechBacklog.adjustedRate(item.rate, backlog: backlog)
+        let token = generation
+        loading = Task { [weak self] in
+            do {
+                let data = try await CloudSpeechAPI.synthesize(item.text, rate: rate)
+                guard let self, !Task.isCancelled, self.generation == token else { return }
+                let player = try AVAudioPlayer(data: data)
+                player.delegate = self
+                self.audioPlayer = player
+                guard player.play() else { throw URLError(.cannotDecodeContentData) }
+            } catch {
+                guard let self, !Task.isCancelled, self.generation == token else { return }
+                // Network failure must not leave dialogue waiting indefinitely.
+                guard let voice = Self.voice(for: item.language) else { self.completed(); return }
+                let utterance = AVSpeechUtterance(string: item.text)
+                utterance.voice = voice
+                utterance.rate = rate
+                self.activeUtteranceID = ObjectIdentifier(utterance)
+                self.synthesizer.speak(utterance)
+            }
+        }
     }
 
-    func stop() { synthesizer.stopSpeaking(at: .immediate); finish() }
+    static func voice(for language: String) -> AVSpeechSynthesisVoice? {
+        let system = AVSpeechSynthesisVoice(language: language)
+        let matching = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == system?.language }
+        return matching.sorted { $0.quality.rawValue > $1.quality.rawValue }.first ?? system
+    }
 
-    private func finish() {
+    private func cancelPlayback() {
+        generation = UUID()
+        loading?.cancel(); loading = nil
+        audioPlayer?.stop(); audioPlayer = nil
         activeUtteranceID = nil
-        queuedUtteranceIDs.removeAll()
-        waitingSpeech.removeAll()
-        isPlaying = false
-        let callbacks = completions
-        completions = []
+        synthesizer.stopSpeaking(at: .immediate)
+        waiting.removeAll(); busy = false
+    }
+    func stop() { cancelPlayback(); finish() }
+    private func finish() {
+        busy = false; isPlaying = false
+        let callbacks = completions; completions.removeAll()
         for callback in callbacks { callback() }
     }
-
-    private func completed(_ id: ObjectIdentifier) {
-        if queuedUtteranceIDs.remove(id) != nil {
-            playNextQueuedSpeech()
-            isPlaying = activeUtteranceID != nil || !queuedUtteranceIDs.isEmpty || !waitingSpeech.isEmpty
-        } else if activeUtteranceID == id {
-            activeUtteranceID = nil
-            isPlaying = !queuedUtteranceIDs.isEmpty
-            let callbacks = completions
-            completions = []
-            for callback in callbacks { callback() }
-        }
+    private func completed() {
+        audioPlayer = nil; activeUtteranceID = nil; busy = false
+        playNext()
     }
-
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in if self.audioPlayer === player { self.completed() } }
+    }
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor in if self.audioPlayer === player { self.completed() } }
+    }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            completed(ObjectIdentifier(utterance))
-        }
+        Task { @MainActor in if self.activeUtteranceID == ObjectIdentifier(utterance) { self.completed() } }
     }
-
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            completed(ObjectIdentifier(utterance))
-        }
+        Task { @MainActor in if self.activeUtteranceID == ObjectIdentifier(utterance) { self.completed() } }
     }
 }
 

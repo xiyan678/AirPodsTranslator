@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createDeviceVerifier } from './device-check.mjs';
+import { createSpeechSynthesizer } from './speech.mjs';
+import { createReferralService, createPurchaseVerifier, ReferralError } from './referrals.mjs';
 
 const instructions = `从对话中提炼要点，使用中文。只返回 JSON 对象，包含 keyPoints、questions、nextSteps 三个字符串数组。
 keyPoints 是重点内容：合并重复信息，简洁概括关键事实与结论，保留重要人名、数字和时间，不逐句复述。原文是主要依据，译文仅供参考；识别不清的内容不要猜测。
@@ -57,7 +59,10 @@ async function readBody(request) {
 }
 
 export function createSummaryServer({ env = process.env, fetchImpl = fetch, now = Date.now,
-  deviceVerifier = createDeviceVerifier(env, fetchImpl, now), stateFile = null } = {}) {
+  deviceVerifier = createDeviceVerifier(env, fetchImpl, now), stateFile = null,
+  speech = createSpeechSynthesizer(env),
+  referrals = createReferralService({ file: env.REFERRAL_STATE_FILE || (stateFile ? resolve(dirname(stateFile), 'referrals.json') : null),
+    now, deviceVerifier, purchaseVerifier: createPurchaseVerifier(env), bundleID: env.APPLE_BUNDLE_ID }) } = {}) {
   const perIP = new Map();
   let hour = Math.floor(now() / 3600000), day = Math.floor(now() / 86400000);
   let dailyCount = 0, active = 0;
@@ -101,9 +106,17 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
         reply(response, 200, { ok: true, configured: Boolean(env.DASHSCOPE_API_KEY?.trim()) && deviceVerifier.configured });
         return;
       }
-      if (request.url !== '/v1/summary') throw new RequestError(404, '接口不存在');
+      if (request.method === 'GET' && request.url === '/v1/speech/health') {
+        reply(response, 200, { ok: true, configured: speech.configured && deviceVerifier.configured });
+        return;
+      }
+      const referralAction = /^\/v1\/referrals\/(status|generate|activate|purchase)$/.exec(request.url)?.[1];
+      const isSpeech = request.url === '/v1/speech';
+      if (!referralAction && !isSpeech && request.url !== '/v1/summary') throw new RequestError(404, '接口不存在');
       if (request.method !== 'POST') { reply(response, 405, { error: '只支持 POST' }, { allow: 'POST' }); return; }
-      if (!env.DASHSCOPE_API_KEY?.trim()) throw new RequestError(503, '总结服务尚未配置');
+      if (!referralAction && (isSpeech ? !speech.configured : !env.DASHSCOPE_API_KEY?.trim())) {
+        throw new RequestError(503, isSpeech ? '语音服务尚未配置' : '总结服务尚未配置');
+      }
       if (!deviceVerifier.configured) throw new RequestError(503, '设备验证服务尚未配置');
       if (!(request.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
         throw new RequestError(415, '请使用 application/json');
@@ -114,7 +127,7 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       const realIP = request.headers['x-real-ip'];
       if (env.TRUST_PROXY === '1' && typeof realIP === 'string' && isIP(realIP)) ip = realIP;
       if (perIP.size >= 10000 && !perIP.has(ip)) throw new RequestError(429, '请求较多，请稍后重试');
-      if ((perIP.get(ip) || 0) >= hourlyLimit || dailyCount >= dailyLimit) {
+      if ((perIP.get(ip) || 0) >= hourlyLimit || (!referralAction && dailyCount >= dailyLimit)) {
         reply(response, 429, { error: '请求较多，请稍后重试' }, { 'retry-after': '60' }); return;
       }
       if (active >= maxConcurrent) throw new RequestError(503, '服务繁忙，请稍后重试');
@@ -123,7 +136,14 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       perIP.set(ip, (perIP.get(ip) || 0) + 1);
       persistLimits();
       const body = await readBody(request);
-      if (typeof body?.transcript !== 'string' || !body.transcript.trim() ||
+      if (referralAction) {
+        if (!body || typeof body !== 'object') throw new RequestError(400, '请求内容无效');
+      } else if (isSpeech) {
+        if (typeof body?.text !== 'string' || !body.text.trim() || [...body.text].length > 2000 ||
+            typeof body.rate !== 'number' || !Number.isFinite(body.rate) || body.rate < 0.5 || body.rate > 2) {
+          throw new RequestError(400, '请提供有效的朗读文字和语速');
+        }
+      } else if (typeof body?.transcript !== 'string' || !body.transcript.trim() ||
           [...body.transcript].length > 32000 || (body.previousSummary != null &&
           (typeof body.previousSummary !== 'string' || body.previousSummary.length > 20000))) {
         throw new RequestError(400, '请提供有效的对话文字');
@@ -142,12 +162,24 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       catch { throw new RequestError(503, '设备验证服务暂不可用'); }
       if (!verified) throw new RequestError(401, '设备验证失败');
       // Recheck after awaiting Apple: another verified request may have filled the cap.
+      if (referralAction) {
+        reply(response, 200, await referrals.handle(referralAction, body, deviceToken));
+        return;
+      }
       if (dailyCount >= dailyLimit) throw new RequestError(429, '请求较多，请稍后重试');
       dailyCount++;
       persistLimits();
       cancellation = new AbortController();
       disconnect = () => { if (!response.writableEnded) cancellation.abort(); };
       response.on('close', disconnect);
+      if (isSpeech) {
+        const audio = await speech.synthesize(body.text.trim(), body.rate, cancellation.signal);
+        if (response.destroyed || response.writableEnded) return;
+        response.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': audio.length,
+          'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+        response.end(audio);
+        return;
+      }
       const content = body.previousSummary ? `已有总结：\n${body.previousSummary}\n后续对话：\n${body.transcript}` : body.transcript;
       const upstream = await fetchImpl(env.QWEN_ENDPOINT || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
         method: 'POST',
@@ -164,8 +196,8 @@ export function createSummaryServer({ env = process.env, fetchImpl = fetch, now 
       reply(response, 200, parseOutline(result?.choices?.[0]?.message?.content));
     } catch (error) {
       if (response.destroyed || response.writableEnded) return;
-      reply(response, error instanceof RequestError ? error.status : 502,
-        { error: error instanceof RequestError ? error.message : '总结未完成，请稍后重试' });
+      reply(response, (error instanceof RequestError || error instanceof ReferralError) ? error.status : 502,
+        { error: (error instanceof RequestError || error instanceof ReferralError) ? error.message : '服务未完成，请稍后重试' });
     } finally {
       if (disconnect) response.off('close', disconnect);
       if (occupied) active--;

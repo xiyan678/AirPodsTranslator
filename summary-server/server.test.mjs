@@ -146,3 +146,46 @@ test('parses fenced JSON, removes duplicate points, preserves absent tasks as em
     assert.throws(() => parseOutline(bad));
   }
 });
+
+test('DeviceCheck handles a new device with no bits and updates only the reserved activity bit', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'device-bits-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const keyFile = join(directory, 'key.p8');
+  writeFileSync(keyFile, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  let response = new Response('Bit State Not Found', { status: 200 });
+  const verifier = createDeviceVerifier({ DEVICECHECK_KEY_FILE: keyFile, APPLE_TEAM_ID: 'TEAM', DEVICECHECK_KEY_ID: 'KEY' },
+    async (url, request) => {
+      if (url.endsWith('/update_two_bits')) {
+        const body = JSON.parse(request.body);
+        assert.equal(body.bit0, true); assert.equal(body.bit1, undefined);
+        return new Response('', { status: 200 });
+      }
+      return response;
+    });
+  assert.deepEqual(await verifier.queryBits('phone'), { bit0: false, bit1: false });
+  response = new Response('', { status: 200, statusText: 'Bit State Not Found' });
+  assert.deepEqual(await verifier.queryBits('phone'), { bit0: false, bit1: false });
+  response = Response.json({ bit0: true, bit1: true });
+  assert.deepEqual(await verifier.queryBits('phone'), { bit0: true, bit1: true });
+  await verifier.updateBits('phone', { bit0: true });
+  response = new Response('unexpected error', { status: 200 });
+  await assert.rejects(verifier.queryBits('phone'));
+});
+
+test('invitation API requires fresh Apple credentials and does not consume speech or summary daily quota', async t => {
+  let calls = 0;
+  const url = await start(t, { env: { REQUESTS_PER_DAY: '1' }, fetchImpl: async () => success(),
+    referrals: { handle: async (action, body) => { calls++; assert.equal(action, 'status'); assert.equal(body.test, true); return { rewardDays: 0 }; } } });
+  const request = token => fetch(url + '/v1/referrals/status', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-device-token': token }, body: JSON.stringify({ test: true })
+  });
+  assert.equal((await request('')).status, 401);
+  assert.equal(calls, 0);
+  const token = randomBytes(32).toString('base64');
+  assert.equal((await request(token)).status, 200);
+  assert.equal((await request(token)).status, 401);
+  assert.equal((await send(url, { transcript: 'still within model quota' })).status, 200);
+  assert.equal((await request(randomBytes(32).toString('base64'))).status, 200);
+  assert.equal(calls, 2);
+});

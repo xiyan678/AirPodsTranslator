@@ -6,6 +6,7 @@ import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var controller: ConversationController
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: MainTab = .listen
     var body: some View {
         VStack(spacing: 0) {
@@ -15,6 +16,11 @@ struct RootView: View {
         }
             .background(Color(red: 0.95, green: 0.95, blue: 0.97))
             .tint(StudioStyle.blue)
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    Task { await controller.subscriptions.refresh(); await controller.subscriptions.refreshRewards() }
+                }
+            }
             .sheet(isPresented: $controller.showPaywall) {
                 PaywallView(subscriptions: controller.subscriptions)
             }
@@ -380,7 +386,6 @@ struct HistoryView: View {
 struct SettingsView: View {
     @EnvironmentObject private var controller: ConversationController
     @ObservedObject var preferences: Preferences
-    @State private var showManageSubscriptions = false
     var body: some View {
         NavigationStack {
             Form {
@@ -410,7 +415,6 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("显示和播放") {
-                    NavigationLink("目标语言声音") { VoiceSettingsView(preferences: preferences) }
                     HStack { Text("字幕大小"); Slider(value: $preferences.fontSize, in: 17...38) }
                     HStack {
                         Text("播报速度")
@@ -420,20 +424,7 @@ struct SettingsView: View {
                 }
                 SummarySettingsSection()
                 Section("记录") { Toggle("自动保存对话", isOn: $preferences.saveAutomatically) }
-                Section("声译 Pro") {
-                    PremiumStatusCard(subscriptions: controller.subscriptions)
-                    Button("查看月度与年度订阅") { controller.showPaywall = true }
-                    Button("管理订阅") { showManageSubscriptions = true }
-                    Button("恢复购买") {
-                        Task {
-                            await controller.subscriptions.restore()
-                            if let error = controller.subscriptions.errorMessage {
-                                controller.errorMessage = error
-                                controller.subscriptions.errorMessage = nil
-                            }
-                        }
-                    }
-                }
+                SubscriptionSettingsSection(subscriptions: controller.subscriptions, usage: controller.usage)
                 Section("关于") {
                     Button {
                         let application = UIApplication.shared
@@ -456,8 +447,10 @@ struct SettingsView: View {
             }
             .navigationTitle("设置")
             .scrollContentBackground(.hidden)
-            .background(StudioBackground().ignoresSafeArea())
-            .manageSubscriptionsSheet(isPresented: $showManageSubscriptions)
+            .background(Color(red: 0.95, green: 0.95, blue: 0.97).ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            .preferredColorScheme(.light)
+            .listSectionSpacing(24)
             .onChange(of: preferences.sourceLanguage) { _, source in
                 if source == preferences.preferredLanguage { preferences.sourceLanguage = Preferences.manualSource(nil, target: source) }
             }
@@ -465,21 +458,6 @@ struct SettingsView: View {
                 if target == preferences.sourceLanguage { preferences.sourceLanguage = Preferences.manualSource(nil, target: target) }
             }
         }
-    }
-}
-
-private struct PremiumStatusCard: View {
-    @ObservedObject var subscriptions: SubscriptionManager
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(subscriptions.isPro ? "Pro 已开通" : "免费版", systemImage: "sparkles")
-                .font(.headline).foregroundStyle(StudioStyle.ink)
-            if subscriptions.isPro { Text("无限同传与对话").foregroundStyle(.secondary) }
-        }
-        .font(.subheadline)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 8)
     }
 }
 

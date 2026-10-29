@@ -32,6 +32,13 @@ chmod 600 "$project_dir/.env"
 chmod 755 "$project_dir"
 chmod 644 "$project_dir/server.mjs"
 chmod 644 "$project_dir/device-check.mjs"
+chmod 644 "$project_dir/speech.mjs" "$project_dir/referrals.mjs"
+chmod 755 "$project_dir/certificates"
+chmod 644 "$project_dir"/certificates/*.cer
+if [[ ! -d "$project_dir/node_modules/ws" || ! -d "$project_dir/node_modules/@apple/app-store-server-library" ]]; then
+  echo '请先在项目目录执行 npm ci --omit=dev --ignore-scripts，再安装服务。' >&2
+  exit 1
+fi
 if ! runuser -u www -- "$node_bin" -v >/dev/null 2>&1; then
   echo 'www 无法执行 Node，请用 namei -l 检查各级目录的穿越权限。' >&2
   exit 1

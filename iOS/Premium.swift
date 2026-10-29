@@ -12,21 +12,68 @@ final class SubscriptionManager: ObservableObject {
 
     @Published private(set) var isPro = false
     @Published private(set) var activeProductID: String?
+    @Published private(set) var products: [Product] = []
+    @Published private(set) var purchasing = false
     @Published var errorMessage: String?
+    let referrals = ReferralManager()
+    var hasUnlimitedAccess: Bool { isPro || referrals.rewardActive }
     private var updatesTask: Task<Void, Never>?
+    private var referralObserver: AnyCancellable?
 
     init() {
-        Task { await refresh() }
+        referralObserver = referrals.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        Task { await refresh(); await referrals.refresh(); await loadProducts() }
         updatesTask = Task { [weak self] in
             for await result in Transaction.updates {
-                if case .verified(let transaction) = result {
+                guard let self else { return }
+                if case .verified(let transaction) = result,
+                   Self.productIDs.contains(transaction.productID) {
                     await transaction.finish()
+                    await self.referrals.submitPurchase(result.jwsRepresentation)
                 }
-                await self?.refresh()
+                await self.refresh()
             }
         }
     }
+    deinit { updatesTask?.cancel() }
 
+    func loadProducts() async {
+        do { products = try await Product.products(for: Self.productIDs) }
+        catch { products = [] }
+    }
+    func price(for id: String, fallback: String) -> String {
+        products.first(where: { $0.id == id })?.displayPrice ?? fallback
+    }
+    func purchase(_ id: String) async {
+        guard !purchasing else { return }
+        purchasing = true; errorMessage = nil
+        defer { purchasing = false }
+        do {
+            if products.isEmpty { products = try await Product.products(for: Self.productIDs) }
+            guard let product = products.first(where: { $0.id == id }) else {
+                errorMessage = "暂时无法加载订阅商品，请稍后重试"
+                return
+            }
+            guard let account = referrals.accountToken else {
+                errorMessage = "无法保存购买身份，请解锁设备后重试"
+                return
+            }
+            let result = try await product.purchase(options: [.appAccountToken(account)])
+            switch result {
+            case .success(let verification):
+                guard case .verified(let transaction) = verification else {
+                    errorMessage = "未能验证苹果购买凭证，请尝试恢复购买"
+                    return
+                }
+                await transaction.finish()
+                await refresh()
+                await referrals.submitPurchase(verification.jwsRepresentation)
+            case .pending: errorMessage = "购买正在等待批准，批准后将自动开通"
+            case .userCancelled: break
+            @unknown default: break
+            }
+        } catch { errorMessage = error.localizedDescription }
+    }
     func refresh() async {
         var active: String?
         for await result in Transaction.currentEntitlements {
@@ -39,15 +86,22 @@ final class SubscriptionManager: ObservableObject {
         activeProductID = active
         isPro = active != nil
     }
-
+    func refreshRewards() async {
+        await referrals.refresh()
+        guard referrals.status?.activated == true else { return }
+        for await result in Transaction.currentEntitlements {
+            guard case .verified(let tx) = result, Self.productIDs.contains(tx.productID),
+                  tx.revocationDate == nil else { continue }
+            await referrals.submitPurchase(result.jwsRepresentation)
+        }
+    }
     func restore() async {
         errorMessage = nil
         do {
             try await AppStore.sync()
             await refresh()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+            await refreshRewards()
+        } catch { errorMessage = error.localizedDescription }
     }
 }
 
@@ -109,22 +163,29 @@ struct PaywallView: View {
 
     var body: some View {
         NavigationStack {
-            SubscriptionStoreView(productIDs: SubscriptionManager.productIDs) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Image(systemName: "sparkles.rectangle.stack.fill")
-                        .font(.system(size: 38)).foregroundStyle(.cyan)
-                    Text("让每次交流都更自由")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text("Pro 解锁无限同传与对话。翻译、语音识别和记录仍在你的设备上处理。")
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 18) {
-                        NavigationLink("使用条款") { LegalPageView(document: AppLegal.terms) }
-                        NavigationLink("隐私政策") { LegalPageView(document: AppLegal.privacy) }
-                    }
-                    .font(.footnote)
+            Form {
+                Section {
+                    Text("声译 Pro").font(.largeTitle.bold())
+                    Text("解锁无限同传与对话").foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(24)
+                Section {
+                    Button {
+                        Task { await subscriptions.purchase(SubscriptionManager.monthlyID) }
+                    } label: {
+                        LabeledContent("月度 Pro", value: subscriptions.price(for: SubscriptionManager.monthlyID, fallback: "¥68.00") + "/月")
+                    }
+                    Button {
+                        Task { await subscriptions.purchase(SubscriptionManager.yearlyID) }
+                    } label: {
+                        LabeledContent("年度 Pro", value: subscriptions.price(for: SubscriptionManager.yearlyID, fallback: "¥498.00") + "/年")
+                    }
+                }.disabled(subscriptions.purchasing)
+                Section {
+                    Text("自动续订，可随时在 Apple 账户中取消。实际价格以苹果购买确认页为准。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    NavigationLink("使用条款") { LegalPageView(document: AppLegal.terms) }
+                    NavigationLink("隐私政策") { LegalPageView(document: AppLegal.privacy) }
+                }
             }
             .navigationTitle("声译 Pro")
             .toolbar {

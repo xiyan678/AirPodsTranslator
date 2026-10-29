@@ -3,9 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node --env-file=.env server.mjs",
-    "test": "node --test server.test.mjs"
+    "test": "node --test *.test.mjs"
+  },
+  "dependencies": {
+    "@apple/app-store-server-library": "3.1.0",
+    "ws": "8.22.0"
   }
 }
