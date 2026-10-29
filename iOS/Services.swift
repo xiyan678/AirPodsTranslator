@@ -185,19 +185,27 @@ final class WhisperService: ObservableObject {
         defer { loading = false }
         downloadStage = "正在检查语音模型…"
         do {
-            downloading = true
-            let folder = try await WhisperKit.download(variant: "base") { [weak self] progress in
-                let fraction = progress.fractionCompleted
-                Task { @MainActor [weak self] in
-                    guard let self, self.downloading else { return }
-                    self.downloadStage = "正在下载语音模型…"
-                    self.downloadProgress = fraction.isFinite ? max(0, min(1, fraction)) : nil
+            let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            let pathKey = "WhisperBaseModelRelativePath"
+            let folder: URL
+            if let local = LocalWhisperModel.find(home: home, relativePath: UserDefaults.standard.string(forKey: pathKey)) {
+                folder = local
+            } else {
+                downloading = true
+                folder = try await WhisperKit.download(variant: "base") { [weak self] progress in
+                    let fraction = progress.fractionCompleted
+                    Task { @MainActor [weak self] in
+                        guard let self, self.downloading else { return }
+                        self.downloadStage = "正在下载语音模型…"
+                        self.downloadProgress = fraction.isFinite ? max(0, min(1, fraction)) : nil
+                    }
                 }
             }
             downloading = false
             downloadStage = "正在载入语音模型…"
             downloadProgress = nil
             model = try await WhisperKit(WhisperKitConfig(modelFolder: folder.path, load: true, download: false))
+            UserDefaults.standard.set(LocalWhisperModel.relativePath(of: folder, home: home), forKey: pathKey)
             ready = true
             downloadStage = "语音模型已就绪"
         } catch {
