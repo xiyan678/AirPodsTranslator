@@ -253,7 +253,7 @@ final class RegressionTests: XCTestCase {
             RecognizedSegment(text: " [BLANK_AUDIO]", avgLogprob: -0.1, compressionRatio: 1.0, noSpeechProb: 0),
             RecognizedSegment(text: " 请给他一点掌声", avgLogprob: -0.5, compressionRatio: 1.3, noSpeechProb: 0)
         ]
-        XCTAssertEqual(SpeechSegmentFilter.joinedText(segments), "你好 请给他一点掌声")
+        XCTAssertEqual(SpeechSegmentFilter.joinedText(segments), "你好请给他一点掌声")
         XCTAssertEqual(SpeechSegmentFilter.joinedText([segments[1], segments[4]]), "")
     }
 

@@ -11,10 +11,17 @@ struct ConversationServices {
     var translation: (String, String, String, ProcessingMode, TranslationSession?) async throws -> String
     var headphonesConnected: () -> Bool = { SpeechPlayer.headphonesConnected }
     var enqueueSpeech: ((String, String, Float) -> Bool)? = nil
+    var playbackIsActive: (() -> Bool)? = nil
     var partialRecognition: (([Float], String?) async throws -> SpeechRecognitionUpdate)? = nil
     var commitRecognition: ((ConfirmedSpeechPrefix, String) -> Void)? = nil
     var resetRecognition: () -> Void = {}
     var resetRecognitionWindow: () -> Void = {}
+    var prepareRecognition: ((String?) async throws -> Void)? = nil
+
+    func prepare(language: String?) async throws {
+        if let prepareRecognition { try await prepareRecognition(language) }
+        else { try await prepareSpeech() }
+    }
 
     func recognize(_ samples: [Float], language: String?) async throws -> (text: String, language: String) {
         try await recognition(samples, language)
@@ -39,13 +46,13 @@ struct ConversationServices {
             },
             detect: { try await whisper.detectLanguage($0) }
         )
+        let prepare: @MainActor (String?) async throws -> Void = { language in
+            recognizer.reset()
+            if let language, await AppleSpeechSession.installedTranscriber(language: language) != nil { return }
+            try await whisper.prepare()
+        }
         return Self(
-            prepareSpeech: {
-                recognizer.reset()
-                let selected = Preferences().sourceLanguage
-                if selected != "auto", await AppleSpeechSession.installedTranscriber(language: selected) != nil { return }
-                try await whisper.prepare()
-            },
+            prepareSpeech: { try await prepare(nil) },
             requestMicrophonePermission: { await AVAudioApplication.requestRecordPermission() },
             startCapture: { try capture.start() },
             recognition: { samples, language in
@@ -59,7 +66,8 @@ struct ConversationServices {
             partialRecognition: { try await recognizer.recognize($0, language: $1, final: false) },
             commitRecognition: { recognizer.commit($0, language: $1) },
             resetRecognition: { recognizer.reset() },
-            resetRecognitionWindow: { recognizer.resetWindow() }
+            resetRecognitionWindow: { recognizer.resetWindow() },
+            prepareRecognition: { try await prepare($0) }
         )
     }
 }

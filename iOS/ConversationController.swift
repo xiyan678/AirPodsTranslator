@@ -310,7 +310,7 @@ final class ConversationController: ObservableObject {
             return
         }
         do {
-            try await services.prepareSpeech()
+            try await services.prepare(language: recognitionLanguage)
             guard sessionID == activeSession else { return }
             capture.nearField = preferences.nearField
             capture.quality = preferences.processingMode == .quality
@@ -560,7 +560,7 @@ final class ConversationController: ObservableObject {
         transition(to: .preparing)
         status = "准备屏幕音频识别…"
         do {
-            try await services.prepareSpeech()
+            try await services.prepare(language: recognitionLanguage)
             guard sessionID == token else { return }
             guard broadcastInbox.active else {
                 sessionID = nil
@@ -889,8 +889,11 @@ final class ConversationController: ObservableObject {
     }
 
     private func resumeCapture() {
-        guard !isEnding, !player.isPlaying, isRunning, sessionID != nil,
+        guard !isEnding, isRunning, sessionID != nil,
               phase != .replaying else { return }
+        // 耳机同传本来就在连续收音；排队播报不能把完成翻译后的状态留在 translating。
+        // 只有需要重新打开麦克风时，才等待会导致回录的旧播放结束。
+        if !capture.isRecording, services.playbackIsActive?() ?? player.isPlaying { return }
         do {
             if !capture.isRecording {
                 if isBroadcastMode { capture.startExternal() }

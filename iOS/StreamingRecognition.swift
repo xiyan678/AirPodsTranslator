@@ -1,4 +1,5 @@
-import AVFoundation
+// AVAudioConverter 的同步输入回调由本类串行调用，缓冲不在回调运行期间被外部访问。
+@preconcurrency import AVFoundation
 import Foundation
 import Speech
 

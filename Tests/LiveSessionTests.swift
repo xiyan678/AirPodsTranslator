@@ -176,6 +176,47 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertEqual(commits, 0)
     }
 
+    func testTranslationFailureDuringQueuedPlaybackReturnsToListeningAndProcessesNextSentence() async {
+        let capture = AudioCapture()
+        var recognized = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in recognized += 1; return ("Sentence \(recognized)", "en") },
+            translation: { text, _, _, _, _ in
+                if text == "Sentence 1" { throw URLError(.networkConnectionLost) }
+                return "下一句译文"
+            }, playbackIsActive: { true }
+        )
+        let controller = ConversationController(capture: capture, services: services)
+        await controller.start()
+        feedSentence(controller)
+        await eventually { controller.lines.count == 1 && controller.phase == .listening }
+        XCTAssertNotNil(controller.lines.first?.translationIssue)
+        XCTAssertTrue(capture.isRecording)
+        feedSentence(controller)
+        await eventually { controller.lines.count == 2 && controller.phase == .listening }
+        XCTAssertEqual(controller.lines.last?.translated, "下一句译文")
+        controller.clearCurrent()
+    }
+
+    func testDialoguePreparesItsSelectedLanguageInsteadOfDownloadingAnUnneededFallback() async {
+        let capture = AudioCapture()
+        var prepared: [String?] = []
+        let services = ConversationServices(
+            prepareSpeech: { XCTFail("指定说英语时，应优先准备英语原生识别") },
+            requestMicrophonePermission: { true }, startCapture: { capture.startExternal() },
+            recognition: { _, _ in ("Hello", "en") },
+            translation: { _, _, _, _, _ in "你好" },
+            prepareRecognition: { prepared.append($0) }
+        )
+        let controller = ConversationController(capture: capture, services: services)
+        await controller.beginDialogue(in: "en")
+        XCTAssertEqual(prepared, ["en"])
+        XCTAssertTrue(controller.isRunning)
+        controller.clearCurrent()
+    }
+
     func testTimedOutTextCanBeResentBeforeOldTranslationReturns() async {
         let gate = TranslationGate()
         defer { gate.release() }
