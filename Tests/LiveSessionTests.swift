@@ -301,6 +301,72 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertFalse(controller.capture.isRecording)
     }
 
+    func testSpeechLanguagePackFailureKeepsRecognizedOriginal() async {
+        for failure: Error in [CancellationError(), URLError(.notConnectedToInternet)] {
+            let capture = AudioCapture()
+            let services = ConversationServices(prepareSpeech: {}, requestMicrophonePermission: { true },
+                startCapture: { capture.startExternal() },
+                recognition: { _, _ in ("Please keep this sentence", "en") },
+                translation: { _, source, target, _, _ in
+                    throw TranslatorError.languagePackRequired(source, target)
+                })
+            let store = ConversationStore(directory: directory, summarize: { _ in "" })
+            let controller = ConversationController(capture: capture, store: store, services: services)
+            await controller.beginDialogue(in: "en")
+            feedSentence(controller)
+            await eventually { controller.languagePackRequest != nil }
+            guard let request = controller.languagePackRequest else { return }
+            controller.languagePackFailed(failure, for: request.id)
+            XCTAssertEqual(controller.lines.map(\.original), ["Please keep this sentence"])
+            XCTAssertNotNil(controller.lines.first?.translationIssue)
+            if failure is CancellationError { XCTAssertNil(controller.errorMessage) }
+            let recordID = controller.currentConversationID
+            controller.end(save: true)
+            await eventually { controller.hasEnded && store.conversations.contains { $0.id == recordID } }
+            XCTAssertEqual(store.conversations.first(where: { $0.id == recordID })?.lines.first?.original,
+                           "Please keep this sentence")
+        }
+    }
+
+    func testEmptyRevisionPreservesPreviousTextAndDoesNotBlockEnd() async {
+        let capture = AudioCapture()
+        let services = ConversationServices(prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() }, recognition: { _, _ in ("", "en") },
+            translation: { _, _, _, _, _ in "  " })
+        let store = ConversationStore(directory: directory, summarize: { _ in "" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        let original = TranscriptLine(sourceLanguage: "en", targetLanguage: "zh",
+            original: "Before", translated: "之前", isMine: false)
+        controller.lines = [original]
+        await controller.reviseLastLine(original.id, text: "After", source: "en", target: "zh")
+        XCTAssertEqual(controller.lines.first?.original, original.original)
+        XCTAssertEqual(controller.lines.first?.translated, original.translated)
+        XCTAssertNotNil(controller.errorMessage)
+        controller.end()
+        await eventually { controller.hasEnded }
+    }
+
+    func testEndingWaitsForRevisionBeforeSavingUpdatedText() async {
+        let gate = TranslationGate()
+        defer { gate.release() }
+        let controller = controller(translationGate: gate)
+        let original = TranscriptLine(sourceLanguage: "en", targetLanguage: "zh",
+            original: "Before", translated: "之前", isMine: false)
+        controller.lines = [original]
+        let revision = Task {
+            await controller.reviseLastLine(original.id, text: "After", source: "en", target: "zh")
+        }
+        await eventually { gate.waiting }
+        controller.end(save: true)
+        XCTAssertTrue(controller.isEnding)
+        XCTAssertFalse(controller.hasEnded)
+        gate.release()
+        await revision.value
+        await eventually { controller.hasEnded && !controller.store.conversations.isEmpty }
+        XCTAssertEqual(controller.store.conversations.first?.lines.first?.original, "After")
+        XCTAssertEqual(controller.store.conversations.first?.lines.first?.id, original.id)
+    }
+
     func testReplayCannotStopCaptureWhileLiveTranslationIsWaiting() async {
         let gate = TranslationGate()
         defer { gate.release() }

@@ -439,7 +439,8 @@ final class ConversationController: ObservableObject {
     private func finishEndingIfReady() {
         guard isEnding, !draining, pending.isEmpty, pausedUtterances.isEmpty,
               liveTranslations.isEmpty, activeLiveTranslation == nil, liveTranslationWorkerID == nil,
-              waitingUtterance == nil, waitingText == nil, languagePackResumeID == nil else { return }
+              waitingUtterance == nil, waitingText == nil, languagePackResumeID == nil,
+              revisionID == nil, waitingRevision == nil else { return }
         let shouldSave = saveWhenEnded
         isEnding = false
         pause()
@@ -1056,6 +1057,7 @@ final class ConversationController: ObservableObject {
 
     func languagePackFailed(_ error: Error, for requestID: UUID) {
         guard languagePackRequest?.id == requestID else { return }
+        let failedUtterance = waitingUtterance
         let resumeUtterance = waitingUtterance != nil
         let cancelled = error is CancellationError || (TranslationError.alreadyCancelled ~= error) ||
             (error as NSError).domain == NSCocoaErrorDomain &&
@@ -1075,6 +1077,13 @@ final class ConversationController: ObservableObject {
         waitingRevision = nil
         languagePackResumeID = nil
         restoringUtterance = nil
+        if let item = failedUtterance, sessionID == item.sessionID,
+           !lines.contains(where: { $0.id == item.id }) {
+            var line = TranscriptLine(id: item.id, sourceLanguage: item.source, targetLanguage: item.target,
+                                      original: item.text, translated: "", isMine: item.mine)
+            line.translationIssue = cancelled ? "已取消翻译准备，原文已保留" : "翻译准备未完成，原文已保留"
+            lines.append(line)
+        }
         if cancelled {
             // 取消下载是正常操作；暂停收音，避免下一句再次弹出同一个下载提示。
             if resumeUtterance && !isEnding { pause() }
@@ -1091,6 +1100,7 @@ final class ConversationController: ObservableObject {
     }
 
     func reviseLastLine(_ lineID: UUID, text: String, source: String, target: String) async {
+        guard !isEnding, lines.last?.translationPending != true else { return }
         guard lines.last?.id == lineID else {
             errorMessage = "只能修改当前对话的上一句"
             return
@@ -1109,12 +1119,23 @@ final class ConversationController: ObservableObject {
     private func applyRevision(_ revision: PendingRevision, allowDownload: Bool = true,
                                preparedSession: TranslationSession? = nil) async {
         guard revisionID == revision.revisionID, lines.last?.id == revision.lineID else { return }
+        defer {
+            if revisionID == revision.revisionID, waitingRevision?.revisionID != revision.revisionID {
+                revisionID = nil
+            }
+            finishEndingIfReady()
+        }
         do {
             status = "正在重新翻译上一句…"
-            let result = try await services.translate(revision.text, from: revision.source,
-                                                        to: revision.target, mode: preferences.processingMode,
-                                                        preparedSession: preparedSession)
+            let mode = preferences.processingMode
+            let result = try await AsyncDeadline<String>.run(timeout: .seconds(20)) { [services] in
+                try await services.translate(revision.text, from: revision.source,
+                                             to: revision.target, mode: mode, preparedSession: preparedSession)
+            }
             guard revisionID == revision.revisionID, lines.last?.id == revision.lineID else { return }
+            guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw URLError(.cannotDecodeContentData)
+            }
             guard let index = lines.indices.last else { return }
             lines[index].original = revision.text
             lines[index].sourceLanguage = revision.source
