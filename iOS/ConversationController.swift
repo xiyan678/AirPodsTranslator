@@ -828,15 +828,15 @@ final class ConversationController: ObservableObject {
                 return
             }
             let output: AudioDestination = item.mine ? .speaker : destination
-            // 同传时译文只进耳机，麦克风继续收音，播报期间对方说的话不会丢。
-            // 外放或未连接耳机时译文会被麦克风录回去，仍按原逻辑先停止收音。
-            let keepListening = mode == .listen && output == .earphones &&
-                capture.isRecording && services.headphonesConnected()
+            // Live interpretation owns a continuous input stream. Playback is a consumer,
+            // never a reason to stop that stream; microphone echo processing is configured
+            // when capture starts. Dialogue retains its explicit turn-taking behavior.
+            let keepListening = mode == .listen && capture.isRecording
             if keepListening {
-                // 耳机同传：按顺序播报，识别队列继续处理下一句，不等待整段朗读结束。
+                // 同传按顺序播报，识别继续处理下一句，不等待整段朗读结束。
                 let queued = services.enqueueSpeech?(translated, item.target, preferences.speechRate) ??
                     player.enqueue(translated, language: item.target, rate: preferences.speechRate,
-                                   voiceIdentifier: preferences.voiceIdentifier(for: item.target))
+                                   voiceIdentifier: preferences.voiceIdentifier(for: item.target), destination: output)
                 if !queued { errorMessage = "当前设备没有\(AppLanguage.name(item.target))语音，译文已显示" }
                 transition(to: .listening)
                 updateOutputRoute()
@@ -893,9 +893,8 @@ final class ConversationController: ObservableObject {
     private func resumeCapture() {
         guard !isEnding, isRunning, sessionID != nil,
               phase != .replaying else { return }
-        // 耳机同传本来就在连续收音；排队播报不能把完成翻译后的状态留在 translating。
-        // 只有需要重新打开麦克风时，才等待会导致回录的旧播放结束。
-        if !capture.isRecording, services.playbackIsActive?() ?? player.isPlaying { return }
+        // 同传的播报队列不拥有录音生命周期；对话模式保留轮流说话的等待。
+        if mode != .listen, !capture.isRecording, services.playbackIsActive?() ?? player.isPlaying { return }
         do {
             if !capture.isRecording {
                 if isBroadcastMode { capture.startExternal() }

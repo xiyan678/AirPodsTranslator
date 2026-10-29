@@ -326,6 +326,8 @@ final class AudioCapture: NSObject, ObservableObject {
     var quality = false
     /// 同传和对话均等待句末停顿；同传保留实时预览，并限制连续无停顿音频的窗口。
     var liveSegmentation = false
+    /// Only microphone capture needs acoustic echo processing; external PCM bypasses it.
+    private(set) var echoProcessingActive = false
     private var engine: AVAudioEngine?
     private var samples: [Float] = []
     private var beganSpeaking = false
@@ -420,11 +422,18 @@ final class AudioCapture: NSObject, ObservableObject {
         guard !isRecording else { return }
         let recordingID = UUID()
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: nearField ? .voiceChat : .default,
+        try session.setCategory(.playAndRecord, mode: nearField || liveSegmentation ? .voiceChat : .default,
                                 options: [.allowBluetoothA2DP])
         try session.setActive(true)
         let next = AVAudioEngine()
         let input = next.inputNode
+        // Configure voice processing before reading the hardware format or installing the tap.
+        // Category/mode alone does not enable the engine's voice-processing I/O unit.
+        if liveSegmentation {
+            try input.setVoiceProcessingEnabled(true)
+            echoProcessingActive = input.isVoiceProcessingEnabled
+            guard echoProcessingActive else { throw TranslatorError.recordingFailed }
+        }
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0,
               let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -468,6 +477,7 @@ final class AudioCapture: NSObject, ObservableObject {
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
+        echoProcessingActive = false
         isRecording = false
         level = 0
         samples = []
@@ -646,11 +656,15 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
         return AVAudioSession.sharedInstance().currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
     }
 
-    /// 沿用正在收音的耳机会话，把译文加入系统朗读队列，保留原有句子的播放顺序。
+    /// Reuse capture's audio session; enqueueing must never stop capture or change category.
     @discardableResult
-    func enqueue(_ text: String, language: String, rate: Float, voiceIdentifier: String? = nil) -> Bool {
+    func enqueue(_ text: String, language: String, rate: Float, voiceIdentifier: String? = nil,
+                 destination: AudioDestination = .earphones) -> Bool {
         guard let voice = Self.voice(for: language, identifier: voiceIdentifier) else { return false }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        do {
+            try AVAudioSession.sharedInstance().overrideOutputAudioPort(destination == .speaker ? .speaker : .none)
+        } catch { return false }
         waitingSpeech.append(QueuedSpeech(text: text, voice: voice, rate: rate))
         isPlaying = true
         playNextQueuedSpeech()
