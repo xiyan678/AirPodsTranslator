@@ -200,6 +200,7 @@ struct TranscriptCard: View {
 
 struct CameraTranslateView: View {
     @EnvironmentObject private var controller: ConversationController
+    @Environment(\.dismiss) private var dismiss
     @State private var photo: PhotosPickerItem?
     @State private var showCamera = false
     var body: some View {
@@ -239,6 +240,7 @@ struct CameraTranslateView: View {
                 }
             }
             .navigationTitle("拍照翻译")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
             .sheet(isPresented: $showCamera) {
                 CameraPicker { data in Task { await controller.translateImage(data) } }
             }

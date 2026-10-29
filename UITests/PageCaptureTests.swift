@@ -29,7 +29,7 @@ final class PageCaptureTests: XCTestCase {
         app.buttons["图片翻译"].tap()
         XCTAssertTrue(app.navigationBars["拍照翻译"].waitForExistence(timeout: 5))
         capture("03-图片翻译", app: app)
-        app.swipeDown()
+        app.buttons["完成"].tap()
         app.buttons["对话"].tap()
         XCTAssertTrue(app.buttons["说中文"].waitForExistence(timeout: 5))
         capture("04-双语语音对话", app: app)
