@@ -108,6 +108,50 @@ final class StreamingRecognitionTests: XCTestCase {
         XCTAssertTrue(native.cancelled)
     }
 
+    func testFallbackKeepsTheConfirmedAutomaticLanguage() async throws {
+        var requested: [String?] = []
+        let recognizer = AdaptiveSpeechRecognizer(
+            fallback: { _, language, _ in
+                requested.append(language)
+                return ("A short English phrase.", language ?? "fr")
+            },
+            detect: { _ in "en" }, nativeFactory: { _ in nil }
+        )
+        let result = try await recognizer.recognize(Array(repeating: 0.2, count: 16_000),
+                                                    language: nil, final: true)
+        XCTAssertEqual(requested, ["en"], "已确认的语言必须传给备用引擎，不能让短句再次误判语言")
+        XCTAssertEqual(result.language, "en")
+    }
+
+    func testUnresponsiveNativePreparationFallsBackAndClosesTheLateSession() async throws {
+        let gate = RecognitionTestGate()
+        defer { gate.release() }
+        let native = StubIncrementalSpeech()
+        var finished = false
+        var fallbacks = 0
+        let recognizer = AdaptiveSpeechRecognizer(
+            fallback: { _, _, _ in fallbacks += 1; return ("Recovered.", "en") },
+            detect: { _ in "en" },
+            nativeFactory: { _ in await gate.wait(); return native }
+        )
+        let task = Task {
+            let result = try await recognizer.recognize(Array(repeating: 0.2, count: 16_000),
+                                                         language: "en", final: true)
+            finished = true
+            return result
+        }
+        for _ in 0..<100 where !gate.waiting { await Task.yield() }
+        XCTAssertTrue(gate.waiting)
+        try await Task.sleep(for: .milliseconds(2_600))
+        XCTAssertTrue(finished, "原生引擎初始化卡住不能阻塞整条识别队列")
+        XCTAssertEqual(fallbacks, 1)
+        gate.release()
+        let result = try await task.value
+        for _ in 0..<100 where !native.cancelled { await Task.yield() }
+        XCTAssertEqual(result.text, "Recovered.")
+        XCTAssertTrue(native.cancelled, "超时后才初始化完成的旧引擎必须关闭")
+    }
+
     func testFallbackContextIsBoundedAndNeverCrossesLanguagesOrSessions() async throws {
         var prompts: [String] = []
         let recognizer = AdaptiveSpeechRecognizer(

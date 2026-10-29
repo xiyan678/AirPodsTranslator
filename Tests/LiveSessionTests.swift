@@ -397,6 +397,41 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertEqual(controller.store.conversations.first?.lines.count, 2)
     }
 
+    func testUnresponsivePreviewCannotBlockNewerLiveTranslation() async {
+        let capture = AudioCapture(), gate = TranslationGate()
+        defer { gate.release() }
+        var recognitionCount = 0
+        var requests: [String] = []
+        let hypotheses = ["We should", "We should meet", "We should meet tomorrow"]
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in
+                let text = hypotheses[min(recognitionCount, hypotheses.count - 1)]
+                recognitionCount += 1
+                return (text, "en")
+            },
+            translation: { text, _, _, _, _ in
+                requests.append(text)
+                if text == "We should" { _ = await gate.wait() }
+                return "译文 \(text)"
+            }
+        )
+        let controller = ConversationController(capture: capture, services: services)
+        await controller.start()
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { recognitionCount == 1 }
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { gate.waiting }
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { recognitionCount == 3 }
+        try? await Task.sleep(for: .milliseconds(3_500))
+        XCTAssertEqual(requests, ["We should", "We should meet"], "超时预览不能一直挡住后续字幕")
+        XCTAssertEqual(controller.liveTranslation, "译文 We should meet")
+        XCTAssertTrue(controller.lines.isEmpty)
+        controller.clearCurrent()
+    }
+
     func testEndingDuringInstalledTextTranslationStillSavesTheFinalLine() async {
         let gate = TranslationGate()
         defer { gate.release() }
