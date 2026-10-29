@@ -40,6 +40,19 @@ final class ConversationController: ObservableObject {
     private var previewRequestID: UUID?
     private var previewTask: Task<Void, Never>?
     private var previewStabilizer = LiveTranscriptStabilizer()
+    private struct PreviewInput: Equatable {
+        let text: String
+        let source: String
+        let target: String
+        let session: UUID
+
+        func extends(_ earlier: Self) -> Bool {
+            session == earlier.session && source == earlier.source && target == earlier.target &&
+                text.hasPrefix(earlier.text)
+        }
+    }
+    private var latestPreview: PreviewInput?
+    private var completedPreview: PreviewInput?
     @Published private(set) var languagePackRequest: LanguagePackRequest?
     @Published private(set) var isEnding = false
     @Published private(set) var hasEnded = false
@@ -480,7 +493,8 @@ final class ConversationController: ObservableObject {
         }
         let output: AudioDestination = output ?? (line.isMine ? .speaker : destination)
         let played = player.speak(line.translated, language: line.targetLanguage,
-                                  rate: preferences.speechRate, destination: output) { [weak self] in
+                                  rate: preferences.speechRate, destination: output,
+                                  voiceIdentifier: preferences.voiceIdentifier(for: line.targetLanguage)) { [weak self] in
             guard let self else { return }
             guard self.sessionID == activeSession, self.playbackID == token else { return }
             self.playbackID = nil
@@ -635,35 +649,58 @@ final class ConversationController: ObservableObject {
         previewRequestID = nil
         previewTask?.cancel()
         previewTask = nil
+        latestPreview = nil
+        completedPreview = nil
         previewStabilizer.reset()
         liveText = ""
         liveTranslation = ""
     }
 
     private func updateLiveTranslation(source: String, session: UUID) {
-        previewTask?.cancel()
-        let token = UUID()
-        previewRequestID = token
         let text = previewStabilizer.update(liveText, language: source)
         let target = mode == .dialogue && source == preferences.preferredLanguage
             ? lastOtherLanguage : preferences.preferredLanguage
         guard !text.isEmpty, source != target,
               AppLanguage.all.contains(where: { $0.code == source }) else {
+            previewRequestID = nil
+            previewTask?.cancel()
+            previewTask = nil
+            latestPreview = nil
+            completedPreview = nil
             liveTranslation = ""
             return
         }
+        let input = PreviewInput(text: text, source: source, target: target, session: session)
+        latestPreview = input
+        if let completedPreview, !input.extends(completedPreview) { liveTranslation = "" }
+        startNextPreview()
+    }
+
+    private func startNextPreview() {
+        guard previewTask == nil, let input = latestPreview, input != completedPreview else { return }
+        let token = UUID()
+        previewRequestID = token
         previewTask = Task { [weak self] in
             guard let self else { return }
+            let translated: String?
             do {
-                let translated = try await self.services.translate(text, from: source, to: target,
-                    mode: self.preferences.processingMode)
-                guard !Task.isCancelled, self.previewRequestID == token,
-                      self.sessionID == session else { return }
-                self.liveTranslation = translated
+                // 增量预览优先及时显示；完整句子仍使用用户选择的质量策略。
+                translated = try await self.services.translate(input.text, from: input.source,
+                    to: input.target, mode: .fast)
             } catch {
                 // 预览不触发下载、不播报、不保存；完整句子再按正常流程处理。
-                if self.previewRequestID == token { self.liveTranslation = "" }
+                translated = nil
             }
+            guard !Task.isCancelled, self.previewRequestID == token,
+                  self.sessionID == input.session else { return }
+            self.previewTask = nil
+            self.previewRequestID = nil
+            self.completedPreview = input
+            if self.latestPreview?.extends(input) == true, let translated {
+                self.liveTranslation = translated
+            }
+            // 慢翻译完成后直接处理最新稳定前缀，跳过中间已过时的预览。
+            if self.latestPreview != input { self.startNextPreview() }
         }
     }
 
@@ -737,7 +774,8 @@ final class ConversationController: ObservableObject {
             if keepListening {
                 // 耳机同传：按顺序播报，识别队列继续处理下一句，不等待整段朗读结束。
                 let queued = services.enqueueSpeech?(translated, item.target, preferences.speechRate) ??
-                    player.enqueue(translated, language: item.target, rate: preferences.speechRate)
+                    player.enqueue(translated, language: item.target, rate: preferences.speechRate,
+                                   voiceIdentifier: preferences.voiceIdentifier(for: item.target))
                 if !queued { errorMessage = "当前设备没有\(AppLanguage.name(item.target))语音，译文已显示" }
                 transition(to: .listening)
                 updateOutputRoute()
@@ -753,7 +791,9 @@ final class ConversationController: ObservableObject {
             await withCheckedContinuation { continuation in
                 let played = player.speak(translated, language: item.target,
                                           rate: preferences.speechRate,
-                                          destination: output, keepInputActive: keepListening) {
+                                          destination: output,
+                                          voiceIdentifier: preferences.voiceIdentifier(for: item.target),
+                                          keepInputActive: keepListening) {
                     continuation.resume()
                 }
                 if !played { errorMessage = "当前设备没有\(AppLanguage.name(item.target))语音，译文已显示" }
@@ -1054,7 +1094,8 @@ final class ConversationController: ObservableObject {
             }
             // .earphones 使用 playback 会话，跟随系统输出；未连接耳机时由手机播放。
             let played = player.speak(result, language: target, rate: preferences.speechRate,
-                                      destination: .earphones) { [weak self] in
+                                      destination: .earphones,
+                                      voiceIdentifier: preferences.voiceIdentifier(for: target)) { [weak self] in
                 guard let self, shouldResumeCapture, self.sessionID == activeSession,
                       !self.draining else { return }
                 if self.pending.isEmpty { self.resumeCapture() }

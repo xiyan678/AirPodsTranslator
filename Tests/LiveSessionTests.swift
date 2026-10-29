@@ -137,6 +137,46 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertEqual(controller.store.conversations.first?.lines.count, 2)
     }
 
+    func testSlowPreviewCompletesAndCoalescesNewSpeechWithoutRepeatedCancellation() async {
+        let capture = AudioCapture()
+        let gate = TranslationGate()
+        defer { gate.release() }
+        var recognitionCount = 0
+        var requests: [String] = []
+        var modes: [ProcessingMode] = []
+        let hypotheses = ["We should", "We should meet", "We should meet tomorrow"]
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in
+                let text = hypotheses[min(recognitionCount, hypotheses.count - 1)]
+                recognitionCount += 1
+                return (text: text, language: "en")
+            },
+            translation: { text, _, _, mode, _ in
+                requests.append(text)
+                modes.append(mode)
+                if text == "We should" { _ = await gate.wait() }
+                return "译文 \(text)"
+            }
+        )
+        let controller = ConversationController(capture: capture, services: services)
+        await controller.start()
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { recognitionCount == 1 }
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { gate.waiting }
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { recognitionCount == 3 }
+        XCTAssertEqual(requests, ["We should"], "新字幕不得取消尚未完成的预览翻译")
+        gate.release()
+        await eventually { controller.liveTranslation == "译文 We should meet" }
+        XCTAssertEqual(requests, ["We should", "We should meet"])
+        XCTAssertTrue(modes.allSatisfy { $0 == .fast })
+        XCTAssertTrue(controller.lines.isEmpty, "预览不能进入最终对话记录")
+        controller.clearCurrent()
+    }
+
     func testContinuousInterpretationDoesNotWaitForPlaybackBeforeTranslatingNextSentence() async {
         let capture = AudioCapture()
         var spoken: [String] = []

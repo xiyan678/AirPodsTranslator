@@ -18,6 +18,17 @@ final class Preferences: ObservableObject {
     @Published var speechRate = UserDefaults.standard.float(forKey: "speechRate") == 0 ? 0.48 : UserDefaults.standard.float(forKey: "speechRate") {
         didSet { UserDefaults.standard.set(speechRate, forKey: "speechRate") }
     }
+    @Published private(set) var voiceIdentifiers = UserDefaults.standard.dictionary(forKey: "voiceIdentifiers") as? [String: String] ?? [:] {
+        didSet { UserDefaults.standard.set(voiceIdentifiers, forKey: "voiceIdentifiers") }
+    }
+
+    func voiceIdentifier(for language: String) -> String? {
+        voiceIdentifiers[AppLanguage.normalizedCode(language)]
+    }
+
+    func setVoiceIdentifier(_ identifier: String?, for language: String) {
+        voiceIdentifiers[AppLanguage.normalizedCode(language)] = identifier
+    }
     @Published var processingMode = ProcessingMode(rawValue: UserDefaults.standard.string(forKey: "processingMode") ?? "") ?? .quality {
         didSet { UserDefaults.standard.set(processingMode.rawValue, forKey: "processingMode") }
     }

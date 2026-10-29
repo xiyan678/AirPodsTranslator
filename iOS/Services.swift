@@ -537,11 +537,8 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
 
     /// 沿用正在收音的耳机会话，把译文加入系统朗读队列，保留原有句子的播放顺序。
     @discardableResult
-    func enqueue(_ text: String, language: String, rate: Float) -> Bool {
-        guard let voice = AVSpeechSynthesisVoice(language: language) ??
-                AVSpeechSynthesisVoice.speechVoices().first(where: {
-                    AppLanguage.normalizedCode($0.language) == language
-                }) else { return false }
+    func enqueue(_ text: String, language: String, rate: Float, voiceIdentifier: String? = nil) -> Bool {
+        guard let voice = Self.voice(for: language, identifier: voiceIdentifier) else { return false }
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
         utterance.rate = rate
@@ -555,17 +552,15 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     ///   这样播报译文的同时麦克风继续收音。只应在输出到耳机时使用，外放会把译文录回去。
     @discardableResult
     func speak(_ text: String, language: String, rate: Float, destination: AudioDestination,
-               keepInputActive: Bool = false, done: @escaping () -> Void) -> Bool {
+               voiceIdentifier: String? = nil, keepInputActive: Bool = false,
+               done: @escaping () -> Void) -> Bool {
         // 替换播放时保留完成回调，等最后一条语音结束才恢复收音。
         isPlaying = true
         activeUtteranceID = nil
         queuedUtteranceIDs.removeAll()
         completions.append(done)
         synthesizer.stopSpeaking(at: .immediate)
-        guard let voice = AVSpeechSynthesisVoice(language: language) ??
-                AVSpeechSynthesisVoice.speechVoices().first(where: {
-                    AppLanguage.normalizedCode($0.language) == language
-                }) else {
+        guard let voice = Self.voice(for: language, identifier: voiceIdentifier) else {
             finish()
             return false
         }
@@ -603,6 +598,14 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
         activeUtteranceID = ObjectIdentifier(utterance)
         synthesizer.speak(utterance)
         return true
+    }
+
+    static func voice(for language: String, identifier: String? = nil) -> AVSpeechSynthesisVoice? {
+        let code = AppLanguage.normalizedCode(language)
+        if let identifier, let selected = AVSpeechSynthesisVoice(identifier: identifier),
+           AppLanguage.normalizedCode(selected.language) == code { return selected }
+        return AVSpeechSynthesisVoice(language: language) ??
+            AVSpeechSynthesisVoice.speechVoices().first { AppLanguage.normalizedCode($0.language) == code }
     }
 
     func stop() { synthesizer.stopSpeaking(at: .immediate); finish() }

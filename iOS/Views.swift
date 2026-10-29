@@ -408,6 +408,7 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("显示和播放") {
+                    NavigationLink("目标语言声音") { VoiceSettingsView(preferences: preferences) }
                     HStack { Text("字幕大小"); Slider(value: $preferences.fontSize, in: 17...38) }
                     HStack {
                         Text("播报速度")
