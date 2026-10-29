@@ -41,16 +41,17 @@ final class RecordedSpeechTests: XCTestCase {
             preferences.autoReadAloud = previous.3
             preferences.nearField = previous.4
         }
-        preferences.sourceLanguage = "en"
+        preferences.sourceLanguage = "auto"
         preferences.preferredLanguage = "zh"
         preferences.processingMode = .quality
         preferences.autoReadAloud = false
         preferences.nearField = false
         await controller.start()
         XCTAssertTrue(controller.isRunning, controller.errorMessage ?? controller.status)
+        let replayStarted = Date.timeIntervalSinceReferenceDate
         for offset in stride(from: 0, to: samples.count, by: 1_600) {
             capture.feedExternal(Array(samples[offset..<min(offset + 1_600, samples.count)]))
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(100))
         }
         controller.end(save: false)
         for _ in 0..<3_600 {
@@ -64,8 +65,11 @@ final class RecordedSpeechTests: XCTestCase {
         print("LECTURE_REFERENCE: \(expected)")
         print("LECTURE_RECOGNIZED: \(actual)")
         print("LECTURE_WORD_ERROR_RATE: \(errorRate)")
+        print("LECTURE_AUDIO_SECONDS: \(Double(samples.count) / 16_000)")
+        print("LECTURE_REPLAY_SECONDS: \(Date.timeIntervalSinceReferenceDate - replayStarted)")
         XCTAssertLessThanOrEqual(errorRate, 0.15, "清晰英语回放的识别词错误率超过 15%")
-        XCTAssertGreaterThanOrEqual(actualWords.filter { $0 == "not" }.count, 3,
+        XCTAssertGreaterThanOrEqual(actualWords.filter { $0 == "not" }.count,
+                                    expectedWords.filter { $0 == "not" }.count,
                                     "否定条件和金额对比不能丢掉 not")
     }
 

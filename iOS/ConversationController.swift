@@ -715,8 +715,9 @@ final class ConversationController: ObservableObject {
             let translated: String?
             do {
                 // 增量预览优先及时显示；完整句子仍使用用户选择的质量策略。
-                translated = try await self.services.translate(input.text, from: input.source,
-                    to: input.target, mode: .fast)
+                translated = try await AsyncDeadline<String>.run(timeout: .seconds(3)) { [services = self.services] in
+                    try await services.translate(input.text, from: input.source, to: input.target, mode: .fast)
+                }
             } catch {
                 // 预览不触发下载、不播报、不保存；完整句子再按正常流程处理。
                 translated = nil

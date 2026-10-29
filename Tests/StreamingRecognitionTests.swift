@@ -142,7 +142,7 @@ final class StreamingRecognitionTests: XCTestCase {
         }
         for _ in 0..<100 where !gate.waiting { await Task.yield() }
         XCTAssertTrue(gate.waiting)
-        try await Task.sleep(for: .milliseconds(2_600))
+        try await Task.sleep(for: .milliseconds(5_600))
         XCTAssertTrue(finished, "原生引擎初始化卡住不能阻塞整条识别队列")
         XCTAssertEqual(fallbacks, 1)
         gate.release()

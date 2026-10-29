@@ -17,6 +17,11 @@ jobs:
           cat > Tests/Fixtures/lecture.txt <<'TEXT'
           Today I want to explain why accurate translation depends on complete sentences. We should not release the new version on Friday because the security review is not finished. Sarah will complete the review on Thursday, and David will prepare the customer announcement. If the final checks fail, we will postpone the release instead of removing the safety checks. The budget is fifteen thousand dollars, not fifty thousand dollars.
           TEXT
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('Tests/Fixtures/lecture.txt')
+          path.write_text((path.read_text().strip() + '\n') * 2)
+          PY
           /usr/bin/say -r 175 -f Tests/Fixtures/lecture.txt -o build/lecture.aiff
           /usr/bin/afconvert -f WAVE -d LEI16@16000 -c 1 build/lecture.aiff Tests/Fixtures/lecture.wav
       - name: Generate project

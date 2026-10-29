@@ -61,6 +61,12 @@ protocol IncrementalSpeechSession: AnyObject {
     func cancel()
 }
 
+@MainActor
+private final class PreparedSpeechSession {
+    let session: (any IncrementalSpeechSession)?
+    init(_ session: (any IncrementalSpeechSession)?) { self.session = session }
+}
+
 /// 累积窗口只发送新增样本；结束时冲刷重采样器，避免遗漏仍在滤波缓冲中的尾音。
 @MainActor
 final class StreamingPCMInput {
@@ -181,10 +187,20 @@ final class AdaptiveSpeechRecognizer {
         if let selected, triedLanguage != selected {
             triedLanguage = selected
             do {
-                let candidate = try await nativeFactory(selected)
-                guard generation == activeGeneration else { candidate?.cancel(); throw CancellationError() }
-                native = candidate
-                nativeLanguage = candidate == nil ? nil : selected
+                let prepared = try await AsyncDeadline<PreparedSpeechSession>.run(timeout: .seconds(5)) { [nativeFactory] in
+                    let candidate = try await nativeFactory(selected)
+                    guard !Task.isCancelled else {
+                        candidate?.cancel()
+                        throw CancellationError()
+                    }
+                    return PreparedSpeechSession(candidate)
+                }
+                guard generation == activeGeneration, !Task.isCancelled else {
+                    prepared.session?.cancel()
+                    throw CancellationError()
+                }
+                native = prepared.session
+                nativeLanguage = prepared.session == nil ? nil : selected
             } catch is CancellationError { throw CancellationError() }
             catch {
                 guard generation == activeGeneration else { throw CancellationError() }
@@ -227,7 +243,7 @@ final class AdaptiveSpeechRecognizer {
                                    generation token: UUID) async throws -> SpeechRecognitionUpdate {
         let selected = language ?? detectedLanguage
         let prior = selected != nil && selected == contextLanguage ? context : ""
-        let result = try await fallback(samples, language, prior)
+        let result = try await fallback(samples, selected, prior)
         guard generation == token else { throw CancellationError() }
         if final {
             remember(result.text, language: result.language)
