@@ -83,6 +83,9 @@ struct VoiceSettingsView: View {
                 .disabled(voices.isEmpty || !canPreview)
         }
         .onChange(of: language) { _, _ in player.stop() }
+        .onChange(of: controller.phase) { _, _ in
+            if !canPreview { player.stop() }
+        }
         .onDisappear { player.stop() }
         .alert("无法试听", isPresented: $showPreviewError) {
             Button("好", role: .cancel) {}

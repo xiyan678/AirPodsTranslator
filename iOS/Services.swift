@@ -465,7 +465,7 @@ final class AudioCapture: NSObject, ObservableObject {
         let maximumSamples = liveSegmentation
             ? Self.sampleRate * (quality ? 28 : 8)
             : Self.sampleRate * (quality ? 30 : 20)
-        let partialInterval = Int(Double(Self.sampleRate) * (quality ? 1.8 : 1.2))
+        let partialInterval = Int(Double(Self.sampleRate) * (quality ? 1.2 : 0.8))
         // 换气不等于句末。预览可持续刷新，最终翻译和播报必须等完整停顿。
         // 质量档允许在 Whisper 的 30 秒音频窗口内保留更长的演讲句子。
         if silentSampleCount > silenceLimit {

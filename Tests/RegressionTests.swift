@@ -340,6 +340,22 @@ final class RegressionTests: XCTestCase {
         capture.stop()
     }
 
+    func testBothModesProvideMultiplePreviewOpportunitiesBeforeSentenceEnd() {
+        for quality in [false, true] {
+            let capture = AudioCapture()
+            capture.liveSegmentation = true
+            capture.quality = quality
+            var previews = 0, finals = 0
+            capture.onPartial = { _ in previews += 1 }
+            capture.onUtterance = { _ in finals += 1 }
+            capture.startExternal()
+            capture.feedExternal(Array(repeating: 0.2, count: 40_000))
+            XCTAssertGreaterThanOrEqual(previews, 2, "开口后应及时提供可互相确认的预览，quality=\(quality)")
+            XCTAssertEqual(finals, 0, "预览刷新不得提前触发整句提交")
+            capture.stop()
+        }
+    }
+
     func testQualityModeKeepsALongSentenceTogetherPastTwelveSeconds() {
         let capture = AudioCapture()
         capture.liveSegmentation = true
