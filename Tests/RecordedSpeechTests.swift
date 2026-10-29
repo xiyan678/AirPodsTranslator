@@ -20,6 +20,7 @@ final class RecordedSpeechTests: XCTestCase {
         let samples = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
 
         let capture = AudioCapture(), whisper = WhisperService()
+        print("LECTURE_NATIVE_INSTALLED: \(await AppleSpeechSession.installedTranscriber(language: "en") != nil)")
         var services = ConversationServices.live(whisper: whisper, capture: capture)
         services.requestMicrophonePermission = { true }
         services.startCapture = { capture.startExternal() }
@@ -67,10 +68,17 @@ final class RecordedSpeechTests: XCTestCase {
         print("LECTURE_WORD_ERROR_RATE: \(errorRate)")
         print("LECTURE_AUDIO_SECONDS: \(Double(samples.count) / 16_000)")
         print("LECTURE_REPLAY_SECONDS: \(Date.timeIntervalSinceReferenceDate - replayStarted)")
+        if actualWords.filter({ $0 == "accurate" }).count < expectedWords.filter({ $0 == "accurate" }).count {
+            let independent = try await whisper.recognize(Array(samples.prefix(8 * 16_000)), language: "en")
+            print("LECTURE_INDEPENDENT_FALLBACK: \(independent.text)")
+        }
         XCTAssertLessThanOrEqual(errorRate, 0.15, "清晰英语回放的识别词错误率超过 15%")
         XCTAssertGreaterThanOrEqual(actualWords.filter { $0 == "not" }.count,
                                     expectedWords.filter { $0 == "not" }.count,
                                     "否定条件和金额对比不能丢掉 not")
+        XCTAssertEqual(actualWords.filter { $0 == "accurate" }.count,
+                       expectedWords.filter { $0 == "accurate" }.count,
+                       "完整音频中的 accurate 不能变成 Accura")
     }
 
     private func words(_ text: String) -> [String] {
