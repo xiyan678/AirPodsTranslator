@@ -1,6 +1,18 @@
 import XCTest
 
 final class DialogueInputTests: XCTestCase {
+    private func assertSpeechControlsAboveNavigation(_ app: XCUIApplication,
+                                                    file: StaticString = #filePath, line: UInt = #line) {
+        let navigation = app.buttons["main-tab-1"]
+        XCTAssertTrue(navigation.exists, file: file, line: line)
+        for title in ["说中文", "说英语"] {
+            let button = app.buttons[title]
+            XCTAssertGreaterThan(button.frame.height, 40, file: file, line: line)
+            XCTAssertLessThanOrEqual(button.frame.maxY, navigation.frame.minY,
+                                     "\(title)不能被底部导航遮住", file: file, line: line)
+        }
+    }
+
     func testDialogueDefaultsToSpeechAndKeyboardSwitchesBack() {
         let app = XCUIApplication()
         app.launchArguments += ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
@@ -12,12 +24,15 @@ final class DialogueInputTests: XCTestCase {
         XCTAssertTrue(english.exists)
         XCTAssertTrue(chinese.isHittable)
         XCTAssertTrue(english.isHittable)
+        assertSpeechControlsAboveNavigation(app)
 
         app.buttons["键盘"].tap()
         let input = app.textFields["输入文字，自动识别语言"]
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
         input.typeText("hello")
+        let keyboardIntroduction = app.buttons["Continue"]
+        if keyboardIntroduction.exists && keyboardIntroduction.isHittable { keyboardIntroduction.tap() }
         XCTAssertFalse(chinese.exists, "文字输入模式只显示键盘输入控件")
         XCTAssertFalse(english.exists)
         let keyboardShot = XCTAttachment(screenshot: app.screenshot())
@@ -29,6 +44,7 @@ final class DialogueInputTests: XCTestCase {
         XCTAssertFalse(input.exists)
         XCTAssertTrue(chinese.isHittable)
         XCTAssertTrue(english.isHittable)
+        assertSpeechControlsAboveNavigation(app)
         app.buttons["键盘"].tap()
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         XCTAssertEqual(input.value as? String, "hello", "切换语音不能丢失文字草稿")
@@ -38,6 +54,7 @@ final class DialogueInputTests: XCTestCase {
         XCTAssertTrue(chinese.waitForExistence(timeout: 5))
         XCTAssertTrue(chinese.isHittable)
         XCTAssertTrue(english.isHittable)
+        assertSpeechControlsAboveNavigation(app)
         XCTAssertFalse(input.exists)
         let speechShot = XCTAttachment(screenshot: app.screenshot())
         speechShot.name = "对话页-中文和英语语音入口"

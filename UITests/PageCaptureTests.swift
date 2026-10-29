@@ -38,6 +38,8 @@ final class PageCaptureTests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
         input.typeText("Hello")
+        let keyboardIntroduction = app.buttons["Continue"]
+        if keyboardIntroduction.exists && keyboardIntroduction.isHittable { keyboardIntroduction.tap() }
         capture("05-键盘翻译", app: app)
         app.buttons["语音"].tap()
         app.buttons["历史"].tap()

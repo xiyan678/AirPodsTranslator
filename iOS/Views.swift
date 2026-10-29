@@ -8,13 +8,11 @@ struct RootView: View {
     @EnvironmentObject private var controller: ConversationController
     @State private var selectedTab: MainTab = .listen
     var body: some View {
-        page
-            .safeAreaInset(edge: .top, spacing: 0) {
-                SubtitlePictureInPicturePanel(manager: controller.pictureInPicture)
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !controller.isKeyboardInputFocused { bottomNavigation }
-            }
+        VStack(spacing: 0) {
+            SubtitlePictureInPicturePanel(manager: controller.pictureInPicture)
+            page.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !controller.isKeyboardInputFocused { bottomNavigation }
+        }
             .background(Color(red: 0.95, green: 0.95, blue: 0.97))
             .tint(StudioStyle.blue)
             .sheet(isPresented: $controller.showPaywall) {
@@ -68,6 +66,7 @@ struct RootView: View {
                                 Color.clear, in: Capsule())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("main-tab-\(tab.rawValue)")
             }
         }
         .padding(5)
