@@ -1,8 +1,38 @@
 import XCTest
+import AVFoundation
 @testable import AirPodsTranslator
 
 @MainActor
 final class StreamingRecognitionTests: XCTestCase {
+    func testIncrementalPCMConversionPreservesAudioAndFlushesResampledTail() throws {
+        let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                                sampleRate: 32_000, channels: 1, interleaved: false))
+        let audio = (0..<16_000).map { sin(Float($0) * 0.12) * 0.1 }
+        let streaming = try StreamingPCMInput(format: format)
+        var packets = try streaming.append(Array(audio[..<6_400]), final: false)
+        packets += try streaming.append(Array(audio[..<12_800]), final: false)
+        packets += try streaming.append(audio, final: false)
+        XCTAssertTrue(try streaming.append(audio, final: false).isEmpty, "相同窗口不能重复发送音频")
+        packets += try streaming.append(audio, final: true)
+        let oneShot = try StreamingPCMInput(format: format).append(audio, final: true)
+        func values(_ packets: [StreamingPCMInput.Packet]) -> [Float] {
+            packets.flatMap { packet in
+                Array(UnsafeBufferPointer(start: packet.buffer.floatChannelData![0],
+                                          count: Int(packet.buffer.frameLength)))
+            }
+        }
+        let actual = values(packets), expected = values(oneShot)
+        XCTAssertEqual(actual.count, expected.count)
+        XCTAssertLessThanOrEqual(abs(actual.count - 32_000), 2)
+        let maximumError = zip(actual, expected).map { abs($0.0 - $0.1) }.max() ?? 0
+        XCTAssertLessThan(maximumError, 0.0001, "分批送入应与一次送入保持相同波形")
+        var frameCount: Int64 = 0
+        for packet in packets {
+            XCTAssertEqual(packet.startTime.seconds, Double(frameCount) / 32_000, accuracy: 0.000001)
+            frameCount += Int64(packet.buffer.frameLength)
+        }
+    }
+
     func testFinalTimelineReplacesPreviewAndNeverCommitsUnfinishedSpeech() {
         var timeline = RecognitionTimeline()
         timeline.receive(.init(start: 0, end: 2, text: "I can release.", isFinal: false))

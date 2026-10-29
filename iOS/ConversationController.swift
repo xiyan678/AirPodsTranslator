@@ -536,7 +536,7 @@ final class ConversationController: ObservableObject {
         capture.onPartial = { [weak self] samples in
             guard let self else { return }
             self.latestPartial = (samples, self.capture.windowID)
-            Task { await self?.drain() }
+            Task { await self.drain() }
         }
         capture.onUtterance = { [weak self] samples in
             self?.pending.append(samples)

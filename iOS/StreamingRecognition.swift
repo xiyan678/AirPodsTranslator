@@ -60,6 +60,84 @@ protocol IncrementalSpeechSession: AnyObject {
     func cancel()
 }
 
+/// 累积窗口只发送新增样本；结束时冲刷重采样器，避免遗漏仍在滤波缓冲中的尾音。
+@MainActor
+final class StreamingPCMInput {
+    struct Packet {
+        let buffer: AVAudioPCMBuffer
+        let startTime: CMTime
+    }
+    private let sourceFormat: AVAudioFormat
+    private let format: AVAudioFormat
+    private let converter: AVAudioConverter?
+    private var submittedSamples = 0
+    private var emittedFrames: Int64 = 0
+    private var ended = false
+
+    init(format: AVAudioFormat) throws {
+        guard let source = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
+                                         channels: 1, interleaved: false) else { throw TranslatorError.recordingFailed }
+        sourceFormat = source
+        self.format = format
+        if source == format { converter = nil }
+        else {
+            guard let converter = AVAudioConverter(from: source, to: format) else { throw TranslatorError.recordingFailed }
+            self.converter = converter
+        }
+    }
+
+    func append(_ samples: [Float], final: Bool) throws -> [Packet] {
+        guard !ended, samples.count >= submittedSamples else { throw TranslatorError.recordingFailed }
+        let count = samples.count - submittedSamples
+        let added = samples[submittedSamples...]
+        guard added.allSatisfy(\.isFinite) else { throw TranslatorError.recordingFailed }
+        var buffer: AVAudioPCMBuffer?
+        if count > 0 {
+            guard let next = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(count)),
+                  let channel = next.floatChannelData?[0] else { throw TranslatorError.recordingFailed }
+            next.frameLength = AVAudioFrameCount(count)
+            samples.withUnsafeBufferPointer { source in
+                channel.update(from: source.baseAddress! + submittedSamples, count: count)
+            }
+            buffer = next
+        }
+        var packets: [Packet] = []
+        func emit(_ next: AVAudioPCMBuffer) {
+            guard next.frameLength > 0 else { return }
+            packets.append(Packet(buffer: next,
+                startTime: CMTime(value: emittedFrames, timescale: Int32(format.sampleRate))))
+            emittedFrames += Int64(next.frameLength)
+        }
+        if let converter, count > 0 || final {
+            var supplied = false
+            while true {
+                let capacity = AVAudioFrameCount(ceil(Double(count) * format.sampleRate / 16_000)) + 256
+                guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+                    throw TranslatorError.recordingFailed
+                }
+                var conversionError: NSError?
+                let status = converter.convert(to: output, error: &conversionError) { _, state in
+                    if !supplied, let buffer {
+                        supplied = true
+                        state.pointee = .haveData
+                        return buffer
+                    }
+                    state.pointee = final ? .endOfStream : .noDataNow
+                    return nil
+                }
+                if let conversionError { throw conversionError }
+                if status == .error { throw TranslatorError.recordingFailed }
+                emit(output)
+                if status != .haveData { break }
+                guard output.frameLength > 0 else { throw TranslatorError.recordingFailed }
+            }
+        } else if let buffer { emit(buffer) }
+        submittedSamples = samples.count
+        ended = final
+        return packets
+    }
+}
+
 /// 每个录音窗口只增量送入新增音频。系统资源未安装或引擎出错时，用完整原音频回退。
 @MainActor
 final class AdaptiveSpeechRecognizer {
@@ -192,13 +270,10 @@ final class AdaptiveSpeechRecognizer {
 final class AppleSpeechSession: IncrementalSpeechSession {
     private let language: String
     private let analyzer: SpeechAnalyzer
-    private let format: AVAudioFormat
-    private let sourceFormat: AVAudioFormat
-    private let converter: AVAudioConverter?
+    private let audioInput: StreamingPCMInput
     private let input: AsyncStream<AnalyzerInput>.Continuation
     private var resultTask: Task<Void, Never>?
     private var timeline = RecognitionTimeline()
-    private var submittedSamples = 0
     private var resultError: Error?
     private var cancelled = false
 
@@ -220,8 +295,8 @@ final class AppleSpeechSession: IncrementalSpeechSession {
                                      options: .init(priority: .userInitiated, modelRetention: .whileInUse))
         try await analyzer.prepareToAnalyze(in: format)
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-        let session = AppleSpeechSession(language: language, analyzer: analyzer, format: format,
-                                         sourceFormat: sourceFormat, input: continuation)
+        let session = try AppleSpeechSession(language: language, analyzer: analyzer, format: format,
+                                             input: continuation)
         session.resultTask = Task { @MainActor [weak session] in
             do {
                 for try await result in transcriber.results {
@@ -237,48 +312,17 @@ final class AppleSpeechSession: IncrementalSpeechSession {
     }
 
     private init(language: String, analyzer: SpeechAnalyzer, format: AVAudioFormat,
-                 sourceFormat: AVAudioFormat, input: AsyncStream<AnalyzerInput>.Continuation) {
+                 input: AsyncStream<AnalyzerInput>.Continuation) throws {
         self.language = language
         self.analyzer = analyzer
-        self.format = format
-        self.sourceFormat = sourceFormat
+        audioInput = try StreamingPCMInput(format: format)
         self.input = input
-        converter = format == sourceFormat ? nil : AVAudioConverter(from: sourceFormat, to: format)
     }
 
     func update(_ samples: [Float], final: Bool) async throws -> SpeechRecognitionUpdate {
         guard !cancelled else { throw CancellationError() }
-        guard samples.count >= submittedSamples else { throw TranslatorError.recordingFailed }
-        if samples.count > submittedSamples {
-            let count = samples.count - submittedSamples
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(count)),
-                  let channel = buffer.floatChannelData?[0] else { throw TranslatorError.recordingFailed }
-            buffer.frameLength = AVAudioFrameCount(count)
-            samples.withUnsafeBufferPointer { source in
-                channel.update(from: source.baseAddress! + submittedSamples, count: count)
-            }
-            let output: AVAudioPCMBuffer
-            if format == sourceFormat { output = buffer }
-            else {
-                guard let converter, let converted = AVAudioPCMBuffer(pcmFormat: format,
-                    frameCapacity: AVAudioFrameCount(ceil(Double(count) * format.sampleRate / 16_000)) + 64) else {
-                    throw TranslatorError.recordingFailed
-                }
-                var supplied = false
-                var conversionError: NSError?
-                converter.convert(to: converted, error: &conversionError) { _, status in
-                    guard !supplied else { status.pointee = .noDataNow; return nil }
-                    supplied = true
-                    status.pointee = .haveData
-                    return buffer
-                }
-                if let conversionError { throw conversionError }
-                output = converted
-            }
-            guard output.frameLength > 0 else { throw TranslatorError.recordingFailed }
-            input.yield(AnalyzerInput(buffer: output,
-                bufferStartTime: CMTime(value: Int64(submittedSamples), timescale: 16_000)))
-            submittedSamples = samples.count
+        for packet in try audioInput.append(samples, final: final) {
+            input.yield(AnalyzerInput(buffer: packet.buffer, bufferStartTime: packet.startTime))
         }
         if final {
             input.finish()
