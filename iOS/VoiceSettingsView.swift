@@ -20,7 +20,8 @@ struct VoiceSettingsView: View {
     }
 
     private var canPreview: Bool {
-        !controller.isRunning && !controller.isPreparing && !controller.isEnding && controller.phase != .replaying
+        !controller.isRunning && !controller.isPreparing && !controller.isEnding &&
+            !controller.isTranslatingText && !controller.isSpeechPlaying && controller.phase != .replaying
     }
 
     var body: some View {
@@ -83,7 +84,7 @@ struct VoiceSettingsView: View {
                 .disabled(voices.isEmpty || !canPreview)
         }
         .onChange(of: language) { _, _ in player.stop() }
-        .onChange(of: controller.phase) { _, _ in
+        .onChange(of: canPreview) { _, _ in
             if !canPreview { player.stop() }
         }
         .onDisappear { player.stop() }

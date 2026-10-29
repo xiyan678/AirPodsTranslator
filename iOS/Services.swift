@@ -524,7 +524,7 @@ final class AudioCapture: NSObject, ObservableObject {
 final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
     private var completions: [() -> Void] = []
-    private(set) var isPlaying = false
+    @Published private(set) var isPlaying = false
     private var activeUtteranceID: ObjectIdentifier?
     private var queuedUtteranceIDs = Set<ObjectIdentifier>()
     override init() { super.init(); synthesizer.delegate = self }
@@ -632,16 +632,14 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        let id = ObjectIdentifier(utterance)
         Task { @MainActor in
-            completed(id)
+            completed(ObjectIdentifier(utterance))
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        let id = ObjectIdentifier(utterance)
         Task { @MainActor in
-            completed(id)
+            completed(ObjectIdentifier(utterance))
         }
     }
 }

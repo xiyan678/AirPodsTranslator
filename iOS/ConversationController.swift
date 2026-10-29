@@ -34,6 +34,7 @@ final class ConversationController: ObservableObject {
     @Published var destination: AudioDestination = .earphones
     @Published private(set) var phase: ConversationPhase = .idle
     @Published private(set) var outputRouteName = "未检测到播放设备"
+    @Published private(set) var isSpeechPlaying = false
     @Published var correctionLanguage: String?
     @Published var liveText = ""
     @Published private(set) var liveTranslation = ""
@@ -179,6 +180,7 @@ final class ConversationController: ObservableObject {
         self.capture = audioCapture
         self.store = store ?? ConversationStore()
         self.services = services ?? .live(whisper: speechRecognizer, capture: audioCapture)
+        player.$isPlaying.assign(to: &$isSpeechPlaying)
         preferences.$nearField
             .sink { [weak self] enabled in
                 Task { @MainActor in self?.capture.nearField = enabled }
