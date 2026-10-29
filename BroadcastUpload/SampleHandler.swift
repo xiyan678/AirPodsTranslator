@@ -25,11 +25,11 @@ final class SampleHandler: RPBroadcastSampleHandler {
         setActive(true)
     }
 
-    override func broadcastPaused() { setActive(false) }
+    override func broadcastPaused() { flushChunks(includeTail: true); setActive(false) }
     override func broadcastResumed() { setActive(true) }
     override func broadcastFinished() {
+        flushChunks(includeTail: true)
         setActive(false)
-        pending.removeAll()
     }
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
@@ -81,13 +81,15 @@ final class SampleHandler: RPBroadcastSampleHandler {
         return converter
     }
 
-    private func flushChunks() {
+    private func flushChunks(includeTail: Bool = false) {
         // 音频缓冲区每秒到达几十次，没写新块时不必遍历目录。
-        guard pending.count >= Self.chunkSamples, let directory = BroadcastStorage.directory else { return }
+        guard pending.count >= Self.chunkSamples || (includeTail && !pending.isEmpty),
+              let directory = BroadcastStorage.directory else { return }
         // 每 0.5 秒写一块，缩短屏幕音频进入识别前的等待。
-        while pending.count >= Self.chunkSamples {
-            let samples = Array(pending.prefix(Self.chunkSamples))
-            pending.removeFirst(Self.chunkSamples)
+        while pending.count >= Self.chunkSamples || (includeTail && !pending.isEmpty) {
+            let count = min(pending.count, Self.chunkSamples)
+            let samples = Array(pending.prefix(count))
+            pending.removeFirst(count)
             let data = samples.withUnsafeBytes { Data($0) }
             let name = String(format: "%020ld", sequence)
             sequence += 1

@@ -569,15 +569,17 @@ final class ConversationController: ObservableObject {
     }
 
     private func startBroadcast() async {
-        guard mode == .listen, !isRunning, !isPreparing else { return }
+        guard mode == .listen, !isEnding, !isRunning, !isPreparing, phase != .replaying else { return }
         guard BroadcastStorage.directory != nil else {
             errorMessage = "屏幕广播需要启用 App Group，请检查安装配置"
             return
         }
+        usage.refreshDay()
         guard subscriptions.isPro || usage.remainingLiveSeconds > 0 else {
             showPaywall = true
             return
         }
+        if hasEnded { clearCurrent() }
         let token = UUID()
         sessionID = token
         transition(to: .preparing)
@@ -596,6 +598,9 @@ final class ConversationController: ObservableObject {
             capture.startExternal()
             isBroadcastMode = true
             transition(to: .listening)
+            pending.append(contentsOf: pausedSamples)
+            pausedSamples = []
+            if !pending.isEmpty || !pausedUtterances.isEmpty { Task { await drain() } }
             status = "正在识别屏幕音频…"
             watch.publish(running: true, latest: lines.last?.translated ?? "")
         } catch {

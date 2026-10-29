@@ -8,13 +8,24 @@ final class BroadcastAudioInbox {
     var onSamples: (([Float]) -> Void)?
     var canConsume: (() -> Bool)?
     private(set) var active = false
+    private let directory: () -> URL?
+
+    init(directory: @escaping () -> URL? = { BroadcastStorage.directory }) {
+        self.directory = directory
+    }
 
     func poll() {
-        guard let directory = BroadcastStorage.directory else { return }
+        guard let directory = directory() else { return }
         let marker = directory.appendingPathComponent(BroadcastStorage.activeFile)
         let modified = (try? marker.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         let nowActive = modified.map { Date().timeIntervalSince($0) < 5 } ?? false
-        if nowActive != active {
+        let ending = active && !nowActive
+        // The extension writes its tail before removing the marker. Deliver it
+        // while capture is still running, then let the controller end/save.
+        defer {
+            if ending { active = false; onActiveChange?(false) }
+        }
+        if nowActive != active, !ending {
             active = nowActive
             onActiveChange?(nowActive)
         }
