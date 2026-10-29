@@ -528,7 +528,9 @@ struct LanguagePacksView: View {
         .translationTask(config) { session in
             guard let requestedPair else { return }
             do {
-                try await prepareLanguagePack(session)
+                _ = try await OfflineLanguageResources.live.prepare(
+                    source: requestedPair.source, target: requestedPair.target
+                ) { try await prepareLanguagePack(session) }
                 message = "\(AppLanguage.name(requestedPair.source)) → \(AppLanguage.name(requestedPair.target)) 已就绪"
             } catch { message = error.localizedDescription }
             config = nil
