@@ -15,6 +15,12 @@ final class SherpaSpeech: ObservableObject {
         ("decoder-epoch-99-avg-1.onnx", 13876452),
         ("joiner-epoch-99-avg-1.int8.onnx", 3228404), ("tokens.txt", 56317)
     ]
+    private static let checksums = [
+        "encoder-epoch-99-avg-1.int8.onnx": "8fa764187a261844f859d7143ebaa563af5d10adfece4c18a8f414c88cba2a9b",
+        "decoder-epoch-99-avg-1.onnx": "2e3b5ec371f8899ee6acd829fd753ba45772df57a91bdf37cde3136354e7db7d",
+        "joiner-epoch-99-avg-1.int8.onnx": "1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0",
+        "tokens.txt": "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3"
+    ]
     static func modelDirectory() throws -> URL {
         try FileManager.default.url(for: .applicationSupportDirectory,
             in: .userDomainMask, appropriateFor: nil, create: true)
@@ -53,12 +59,16 @@ final class SherpaSpeech: ObservableObject {
                 let (name, size) = file
                 try Task.checkCancellation()
                 let path = directory.appendingPathComponent(name)
-                if (try? path.resourceValues(forKeys: [.fileSizeKey]).fileSize) == size { continue }
+                guard let checksum = Self.checksums[name] else { throw TranslatorError.modelUnavailable }
+                if (try? path.resourceValues(forKeys: [.fileSizeKey]).fileSize) == size {
+                    self.stage = "正在校验中英语音模型（\(index + 1)/4）"
+                    if try await ModelFileChecksum.matches(path, expected: checksum) { continue }
+                }
                 self.stage = "正在下载中英语音模型（\(index + 1)/\(Self.files.count)）"
                 let url = URL(string: "https://download.duwang.win/models/sherpa-zh-en/\(name)")!
                 let temporary: URL
                 do {
-                    temporary = try await downloader.fetch(url, expectedSize: size) { attempt in
+                    temporary = try await downloader.fetch(url, expectedSize: size, expectedChecksum: checksum) { attempt in
                         self.stage = "网络中断，正在重试（\(attempt)/3；文件 \(index + 1)/4）"
                     }
                 } catch is CancellationError { throw CancellationError() }

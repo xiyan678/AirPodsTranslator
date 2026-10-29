@@ -4,6 +4,17 @@ import XCTest
 
 @MainActor
 final class ModelFileDownloaderTests: XCTestCase {
+    func testSameLengthCorruptionFailsContentVerification() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        try Data("abc".utf8).write(to: path)
+        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        let valid = try await ModelFileChecksum.matches(path, expected: expected)
+        XCTAssertTrue(valid)
+        try Data("xyz".utf8).write(to: path)
+        let corrupted = try await ModelFileChecksum.matches(path, expected: expected)
+        XCTAssertFalse(corrupted, "同样大小的文件也必须校验内容")
+    }
     private let url = URL(string: "https://example.com/model.onnx")!
 
     private func fixture(_ size: Int) throws -> URL {

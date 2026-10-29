@@ -1,4 +1,24 @@
 import Foundation
+import CryptoKit
+
+enum ModelFileChecksum {
+    static func matches(_ path: URL, expected: String) async throws -> Bool {
+        let task = Task.detached(priority: .utility) {
+            let file = try FileHandle(forReadingFrom: path)
+            defer { try? file.close() }
+            var digest = SHA256()
+            while let data = try file.read(upToCount: 1024 * 1024), !data.isEmpty {
+                try Task.checkCancellation()
+                digest.update(data: data)
+            }
+            return digest.finalize().map { String(format: "%02x", $0) }.joined() == expected
+        }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await task.value
+        } onCancel: { task.cancel() }
+    }
+}
 
 /// Bounded retries share the same logic in production and network-failure tests.
 @MainActor
@@ -8,7 +28,7 @@ struct ModelFileDownloader {
         try await Task.sleep(for: .seconds(attempt))
     }
 
-    func fetch(_ url: URL, expectedSize: Int, retry: (Int) -> Void) async throws -> URL {
+    func fetch(_ url: URL, expectedSize: Int, expectedChecksum: String? = nil, retry: (Int) -> Void) async throws -> URL {
         var resumeData: Data?
         for attempt in 1...3 {
             try Task.checkCancellation()
@@ -20,6 +40,10 @@ struct ModelFileDownloader {
                           [200, 206].contains(response.statusCode),
                           (try temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize) == expectedSize else {
                         throw URLError(.badServerResponse)
+                    }
+                    if let expectedChecksum {
+                        let valid = try await ModelFileChecksum.matches(temporary, expected: expectedChecksum)
+                        guard valid else { throw URLError(.cannotDecodeContentData) }
                     }
                     return temporary
                 } catch {
