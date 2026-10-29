@@ -10,3 +10,4 @@ DerivedData/
 *.xcodeproj/xcuserdata/
 
 ThirdParty/SherpaOnnx/Artifacts/
+__pycache__/

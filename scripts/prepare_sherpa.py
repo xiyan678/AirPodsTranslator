@@ -5,6 +5,7 @@ Runs before XcodeGen. The static archive is unchanged; only bundle layout change
 from pathlib import Path
 import hashlib
 import json
+import os
 import plistlib
 import shutil
 import tempfile
@@ -41,9 +42,33 @@ def convert(source: Path, destination: Path):
     (destination / "Info.plist").write_bytes(plistlib.dumps(metadata))
 
 
+def file_digests(directory: Path):
+    if os.name == "nt" and not str(directory).startswith("\\\\?\\"):
+        directory = Path("\\\\?\\" + str(directory.resolve()))
+    result = {}
+    for path in sorted(directory.rglob("*")):
+        if path.is_file() and path.name != "prepared.json":
+            digest = hashlib.sha256()
+            with path.open("rb") as data:
+                for block in iter(lambda: data.read(1024 * 1024), b""):
+                    digest.update(block)
+            result[path.relative_to(directory).as_posix()] = digest.hexdigest()
+    return result
+
+
+def cache_valid(directory: Path):
+    try:
+        marker = json.loads((directory / "prepared.json").read_text())
+        if marker.get("sha256") != DIGEST or marker.get("layout") != 2:
+            return False
+        expected = marker.get("files")
+        return isinstance(expected, dict) and "Info.plist" in expected and expected == file_digests(directory)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def main():
-    marker = OUTPUT / "prepared.json"
-    if marker.exists() and json.loads(marker.read_text()) == {"sha256": DIGEST, "layout": 1}:
+    if cache_valid(OUTPUT):
         return
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="sherpa-prepare-") as temp:
@@ -67,11 +92,14 @@ def main():
         source = next((temp / "unpacked").rglob("onnxruntime.xcframework"))
         prepared = temp / "prepared"
         convert(source, prepared)
-        (prepared / "prepared.json").write_text(json.dumps({"sha256": DIGEST, "layout": 1}))
+        (prepared / "prepared.json").write_text(json.dumps({
+            "sha256": DIGEST, "layout": 2, "files": file_digests(prepared)
+        }))
         if OUTPUT.exists():
             if OUTPUT.resolve().parent != (ROOT / "ThirdParty/SherpaOnnx/Artifacts").resolve():
                 raise RuntimeError("Unexpected artifact output path")
-            shutil.rmtree(OUTPUT)
+            delete_path = "\\\\?\\" + str(OUTPUT.resolve()) if os.name == "nt" else OUTPUT
+            shutil.rmtree(delete_path)
         shutil.move(str(prepared), str(OUTPUT))
     print("Verified ONNX static framework prepared; module maps have separate output paths")
 

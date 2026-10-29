@@ -17,6 +17,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Verify binary artifact cache validation
+        run: python3 -m unittest discover -s scripts -p test_prepare_sherpa.py -v
       - run: node --test summary-server/server.test.mjs
   ios:
     runs-on: macos-26
