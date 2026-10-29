@@ -291,6 +291,34 @@ final class RegressionTests: XCTestCase {
         capture.stop()
     }
 
+    func testSustainedSpeechWithoutQuietSyllablesCannotBecomeTheNoiseFloor() {
+        let capture = AudioCapture()
+        capture.liveSegmentation = true
+        capture.quality = true
+        capture.nearField = false
+        var delivered: [[Float]] = []
+        capture.onUtterance = { delivered.append($0) }
+        capture.startExternal()
+        // A compressed lecture can remain loud for many seconds. There is no real pause here.
+        for index in 0..<1_000 {
+            let amplitude: Float = index % 3 == 0 ? 0.12 : index % 3 == 1 ? 0.18 : 0.22
+            capture.feedExternal((0..<320).map { sin(Float($0) * 0.1) * amplitude })
+        }
+        XCTAssertTrue(delivered.isEmpty, "音量持续变化的讲话不能被底噪追上后提前切句")
+        XCTAssertEqual(capture.takePendingSpeech()?.count, 320_000, "最后半句仍要完整保留")
+        capture.stop()
+    }
+
+    func testUncertainSpokenNegationIsNotDeletedFromTheRecognizedSentence() {
+        let segments = [
+            RecognizedSegment(text: "We should", avgLogprob: -0.3, compressionRatio: 1, noSpeechProb: 0),
+            RecognizedSegment(text: "not", avgLogprob: -1.1, compressionRatio: 1, noSpeechProb: 0),
+            RecognizedSegment(text: "release on Friday.", avgLogprob: -0.3, compressionRatio: 1, noSpeechProb: 0)
+        ]
+        XCTAssertEqual(SpeechSegmentFilter.joinedText(segments), "We should not release on Friday.",
+                       "不能删除低置信度词后把否定句拼成肯定句")
+    }
+
     func testUtteranceDropsLongTrailingSilence() {
         let capture = AudioCapture()
         var utterances: [[Float]] = []

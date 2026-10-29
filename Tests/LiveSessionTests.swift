@@ -176,6 +176,33 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertEqual(commits, 0)
     }
 
+    func testPunctuationWithoutAnAcousticPauseCannotCutOffOngoingSpeech() async {
+        let capture = AudioCapture()
+        var previews = 0, commits = 0
+        var finalSamples: [Int] = []
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { samples, _ in finalSamples.append(samples.count); return ("The whole sentence.", "en") },
+            translation: { text, _, _, _, _ in "译文 \(text)" },
+            partialRecognition: { _, _ in
+                previews += 1
+                return SpeechRecognitionUpdate(text: "The whole sentence is still being spoken", language: "en",
+                    confirmedPrefix: .init(text: "The whole.", sampleCount: 16_000))
+            },
+            commitRecognition: { _, _ in commits += 1 }
+        )
+        let controller = ConversationController(capture: capture, services: services)
+        await controller.start()
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { previews > 0 && controller.phase == .listening }
+        XCTAssertTrue(controller.lines.isEmpty, "识别器加了标点，仍不能在连续发音中间提前播报")
+        XCTAssertEqual(commits, 0)
+        controller.end(save: false)
+        await eventually { controller.hasEnded }
+        XCTAssertEqual(finalSamples, [32_000], "未完成的音频必须以整句进入最终识别")
+    }
+
     func testTranslationFailureDuringQueuedPlaybackReturnsToListeningAndProcessesNextSentence() async {
         let capture = AudioCapture()
         var recognized = 0
