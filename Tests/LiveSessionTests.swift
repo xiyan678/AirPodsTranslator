@@ -508,6 +508,32 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertEqual(store.conversations.first?.lines.count, 2)
     }
 
+    func testResumedTranslationsDoNotLeaveCaptureStuckInRecognizingState() async {
+        let capture = AudioCapture(), gate = TranslationGate()
+        defer { gate.release() }
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in ("Sentence one", "en") },
+            translation: { _, _, _, _, _ in await gate.wait() },
+            partialRecognition: { _, _ in SpeechRecognitionUpdate(text: "", language: "en") }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "会议" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        await controller.start()
+        feedSentence(controller)
+        await eventually { gate.waiting }
+        controller.pause()
+        gate.release()
+        await controller.start()
+        await eventually { controller.lines.count == 1 }
+        XCTAssertEqual(controller.phase, .listening, "只有翻译恢复时，识别队列应回到倾听状态")
+        XCTAssertTrue(capture.isRecording)
+        controller.end(save: true)
+        await eventually { controller.hasEnded && !store.conversations.isEmpty }
+        XCTAssertEqual(store.conversations.first?.lines.count, 1)
+    }
+
     func testUnresponsivePreviewCannotBlockNewerLiveTranslation() async {
         let capture = AudioCapture(), gate = TranslationGate()
         defer { gate.release() }

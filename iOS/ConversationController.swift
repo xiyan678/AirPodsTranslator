@@ -621,6 +621,11 @@ final class ConversationController: ObservableObject {
         let drainSession = sessionID
         defer {
             draining = false
+            if mode == .listen, sessionID == drainSession, !isEnding,
+               phase == .recognizing, activeSamples == nil, pending.isEmpty,
+               pausedUtterances.isEmpty, latestPartial == nil {
+                transition(to: .listening)
+            }
             finishEndingIfReady()
             if !isEnding, phase == .listening, !capture.isRecording { resumeCapture() }
         }
