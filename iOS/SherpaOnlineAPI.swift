@@ -261,9 +261,14 @@ class SherpaOnnxRecognizer {
   /// Constructor taking a model config
   init(
     config: UnsafePointer<SherpaOnnxOnlineRecognizerConfig>
-  ) {
-    self.recognizer = SherpaOnnxCreateOnlineRecognizer(config)
-    self.stream = SherpaOnnxCreateOnlineStream(recognizer)
+  ) throws {
+    guard let recognizer = SherpaOnnxCreateOnlineRecognizer(config) else { throw TranslatorError.modelUnavailable }
+    guard let stream = SherpaOnnxCreateOnlineStream(recognizer) else {
+      SherpaOnnxDestroyOnlineRecognizer(recognizer)
+      throw TranslatorError.modelUnavailable
+    }
+    self.recognizer = recognizer
+    self.stream = stream
   }
 
   deinit {
@@ -292,9 +297,9 @@ class SherpaOnnxRecognizer {
   }
 
   /// Get the decoding results so far
-  func getResult() -> SherpaOnnxOnlineRecongitionResult {
+  func getResult() throws -> SherpaOnnxOnlineRecongitionResult {
     guard let result = SherpaOnnxGetOnlineStreamResult(recognizer, stream) else {
-      fatalError("SherpaOnnxGetOnlineStreamResult returned nil")
+      throw TranslatorError.recordingFailed
     }
     return SherpaOnnxOnlineRecongitionResult(result: result)
   }

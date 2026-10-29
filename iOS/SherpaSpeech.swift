@@ -7,6 +7,7 @@ import SherpaOnnx
 final class SherpaSpeech {
     private var engine: SherpaStreamingEngine?
     private var preparation: Task<SherpaStreamingEngine, Error>?
+    private var needsReset = false
     static func supports(_ language: String?) -> Bool { language == nil || language == "en" || language == "zh" }
 
     func prepare() async throws {
@@ -26,7 +27,7 @@ final class SherpaSpeech {
                 try Task.checkCancellation()
                 let path = directory.appendingPathComponent(name)
                 if (try? path.resourceValues(forKeys: [.fileSizeKey]).fileSize) == size { continue }
-                let url = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/main/\(name)")!
+                let url = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/\(name)")!
                 let (temporary, response) = try await URLSession.shared.download(from: url)
                 defer { try? FileManager.default.removeItem(at: temporary) }
                 guard (response as? HTTPURLResponse)?.statusCode == 200,
@@ -46,10 +47,12 @@ final class SherpaSpeech {
 
     func recognize(_ samples: [Float], language: String?, final: Bool) async throws -> SpeechRecognitionUpdate {
         try await prepare()
+        try Task.checkCancellation()
         guard let engine else { throw TranslatorError.modelUnavailable }
+        if needsReset { needsReset = false; await engine.reset() }
         return try await engine.update(samples, language: language, final: final)
     }
-    func reset() { if let engine { Task { await engine.reset() } } }
+    func reset() { needsReset = true }
 }
 
 /// Serial actor keeps ONNX inference off the UI thread and owns the incremental stream.
@@ -70,7 +73,7 @@ actor SherpaStreamingEngine {
             transducer: transducer, numThreads: 2, modelType: "zipformer")
         var config = sherpaOnnxOnlineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(),
             modelConfig: model, decodingMethod: "modified_beam_search", maxActivePaths: 4)
-        recognizer = SherpaOnnxRecognizer(config: &config)
+        recognizer = try SherpaOnnxRecognizer(config: &config)
     }
     func update(_ samples: [Float], language: String?, final: Bool) throws -> SpeechRecognitionUpdate {
         try Task.checkCancellation()
@@ -84,7 +87,7 @@ actor SherpaStreamingEngine {
             recognizer.inputFinished()
         }
         while recognizer.isReady() { try Task.checkCancellation(); recognizer.decode() }
-        let text = recognizer.getResult().text
+        let text = try recognizer.getResult().text
         let detected = language ?? (NLLanguageRecognizer.dominantLanguage(for: text)?.rawValue.hasPrefix("zh") == true ? "zh" : "en")
         if final { reset() }
         return SpeechRecognitionUpdate(text: text, language: detected)
