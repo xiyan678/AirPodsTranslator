@@ -1,7 +1,4 @@
-"""Wrap ONNX's static library as a framework to isolate its module map from Sherpa's.
-
-Runs before XcodeGen. The static archive is unchanged; only bundle layout changes.
-"""
+"""Prepare a matched official Sherpa/ONNX iOS distribution, preserving runtime ABI."""
 from pathlib import Path
 import hashlib
 import json
@@ -10,36 +7,40 @@ import plistlib
 import shutil
 import tempfile
 import urllib.request
-import zipfile
+import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "ThirdParty/SherpaOnnx/Artifacts/onnxruntime.xcframework"
-DIGEST = "5a18cf7abd25800d77e7365f7f05dc8322d2deed8bde8daa57ba2c282fec4ea5"
-URL = "https://github.com/willwade/sherpa-onnx-spm/releases/download/1.13.8/onnxruntime.xcframework.zip"
+OUTPUT = ROOT / "ThirdParty/SherpaOnnx/Artifacts/paired-ios"
+DIGEST = "63572187c200d70e1b09b47f1bf4e3435ea1c9ced4ca656268fa7d0b94e12610"
+URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.3/sherpa-onnx-v1.13.3-ios-no-tts.tar.bz2"
 
 
-def convert(source: Path, destination: Path):
-    metadata = plistlib.loads((source / "Info.plist").read_bytes())
-    for entry in metadata["AvailableLibraries"]:
-        identifier = entry["LibraryIdentifier"]
-        original = source / identifier
-        framework = destination / identifier / "onnxruntime.framework"
-        framework.mkdir(parents=True)
-        shutil.copy2(original / entry["LibraryPath"], framework / "onnxruntime")
-        shutil.copytree(original / entry["HeadersPath"], framework / "Headers")
-        (framework / "Headers/module.modulemap").unlink(missing_ok=True)
-        (framework / "Modules").mkdir()
-        (framework / "Modules/module.modulemap").write_text(
-            'framework module onnxruntime { header "onnxruntime_c_api.h" export * }\n')
-        (framework / "Info.plist").write_bytes(plistlib.dumps({
-            "CFBundleExecutable": "onnxruntime", "CFBundleIdentifier": "org.onnxruntime.static",
-            "CFBundleName": "onnxruntime", "CFBundlePackageType": "FMWK",
-            "CFBundleVersion": "1", "CFBundleShortVersionString": "1.0",
-        }))
-        entry["LibraryPath"] = "onnxruntime.framework"
-        entry["BinaryPath"] = "onnxruntime.framework/onnxruntime"
-        entry.pop("HeadersPath", None)
-    (destination / "Info.plist").write_bytes(plistlib.dumps(metadata))
+def prepare_pair(unpacked: Path, prepared: Path):
+    prepared.mkdir()
+    for name in ["sherpa-onnx", "onnxruntime"]:
+        source = next(unpacked.rglob(name + ".xcframework"))
+        target = prepared / (name + ".xcframework")
+        shutil.copytree(source, target)
+        metadata = plistlib.loads((target / "Info.plist").read_bytes())
+        for entry in metadata["AvailableLibraries"]:
+            variant = target / entry["LibraryIdentifier"]
+            if name == "sherpa-onnx":
+                headers = variant / "Headers"
+                shutil.copytree(target / "Headers", headers)
+                (headers / "module.modulemap").write_text(
+                    'module sherpa_onnx { header "sherpa-onnx/c-api/c-api.h" export * }\n')
+                entry["HeadersPath"] = "Headers"
+            else:
+                framework = variant / entry["LibraryPath"]
+                modules = framework / "Modules"
+                modules.mkdir(exist_ok=True)
+                (modules / "module.modulemap").write_text(
+                    'framework module onnxruntime { header "onnxruntime_c_api.h" export * }\n')
+                header = (framework / "Headers/onnxruntime_c_api.h").read_text()
+                if "#define ORT_API_VERSION 26" not in header:
+                    raise RuntimeError("Unexpected ONNX Runtime ABI")
+        (target / "Info.plist").write_bytes(plistlib.dumps(metadata))
+    (prepared / "Info.plist").write_bytes(plistlib.dumps({"Release": "v1.13.3", "ORT_API_VERSION": 26}))
 
 
 def file_digests(directory: Path):
@@ -73,25 +74,30 @@ def main():
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="sherpa-prepare-") as temp:
         temp = Path(temp)
-        archive = temp / "onnx.zip"
+        archive = temp / "official-ios.tar.bz2"
         with urllib.request.urlopen(URL, timeout=120) as response, archive.open("wb") as output:
             shutil.copyfileobj(response, output)
+        digest = hashlib.sha256()
         with archive.open("rb") as data:
-            digest = hashlib.sha256()
             for block in iter(lambda: data.read(1024 * 1024), b""):
                 digest.update(block)
-            actual = digest.hexdigest()
-        if actual != DIGEST:
-            raise RuntimeError("ONNX artifact SHA256 mismatch")
-        with zipfile.ZipFile(archive) as bundle:
-            for item in bundle.infolist():
-                resolved = (temp / "unpacked" / item.filename).resolve()
-                if not resolved.is_relative_to((temp / "unpacked").resolve()):
+        if digest.hexdigest() != DIGEST:
+            raise RuntimeError("Official iOS bundle SHA256 mismatch")
+        unpacked = temp / "unpacked"
+        with tarfile.open(archive) as bundle:
+            members = []
+            for member in bundle.getmembers():
+                if not (unpacked / member.name).resolve().is_relative_to(unpacked.resolve()):
                     raise RuntimeError("Unsafe archive path")
-            bundle.extractall(temp / "unpacked")
-        source = next((temp / "unpacked").rglob("onnxruntime.xcframework"))
+                if member.issym():
+                    # Convenience aliases only; metadata names the actual archive.
+                    continue
+                if not member.isfile() and not member.isdir():
+                    raise RuntimeError("Unsupported archive entry")
+                members.append(member)
+            bundle.extractall(unpacked, members=members)
         prepared = temp / "prepared"
-        convert(source, prepared)
+        prepare_pair(unpacked, prepared)
         (prepared / "prepared.json").write_text(json.dumps({
             "sha256": DIGEST, "layout": 2, "files": file_digests(prepared)
         }))
@@ -101,7 +107,7 @@ def main():
             delete_path = "\\\\?\\" + str(OUTPUT.resolve()) if os.name == "nt" else OUTPUT
             shutil.rmtree(delete_path)
         shutil.move(str(prepared), str(OUTPUT))
-    print("Verified ONNX static framework prepared; module maps have separate output paths")
+    print("Verified matched official Sherpa/ONNX iOS bundle prepared (Runtime API 26)")
 
 
 if __name__ == "__main__":

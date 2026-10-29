@@ -20,6 +20,8 @@ targets:
       - target: AirPodsTranslator
       - package: ArgmaxOSS
         product: WhisperKit
+      - package: SherpaOnnx
+        product: SherpaOnnx
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.eggplant1907.jet4469.tests

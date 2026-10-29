@@ -1,25 +1,18 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
-// Pin the release and its published asset digests together. The upstream
-// v1.13.14 manifest references 1.13.2 assets with stale checksums.
+// Both binaries come from one verified official iOS release. Do not mix runtime ABIs.
 let package = Package(
     name: "SherpaOnnx",
     platforms: [.iOS(.v13), .macOS(.v13)],
     products: [.library(name: "SherpaOnnx", targets: ["SherpaOnnx"])],
     targets: [
-        .binaryTarget(
-            name: "sherpa-onnx",
-            url: "https://github.com/willwade/sherpa-onnx-spm/releases/download/1.13.8/sherpa-onnx.xcframework.zip",
-            checksum: "e592886927846382ee69d9162688cab529657e653120af0cc21fd03f73e98813"
-        ),
-        .binaryTarget(
-            name: "onnxruntime",
-            path: "Artifacts/onnxruntime.xcframework"
-        ),
+        .binaryTarget(name: "sherpa-onnx", path: "Artifacts/paired-ios/sherpa-onnx.xcframework"),
+        .binaryTarget(name: "onnxruntime", path: "Artifacts/paired-ios/onnxruntime.xcframework"),
+        .target(name: "SherpaRuntimeCheck", dependencies: ["onnxruntime"]),
         .target(
             name: "SherpaOnnx",
-            dependencies: ["sherpa-onnx", "onnxruntime"],
+            dependencies: ["sherpa-onnx", "onnxruntime", "SherpaRuntimeCheck"],
             linkerSettings: [.linkedLibrary("c++"), .linkedFramework("Accelerate")]
         )
     ]

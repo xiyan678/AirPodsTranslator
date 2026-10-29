@@ -60,6 +60,9 @@ class SherpaOnnxRecognizer {
   init(
     config: UnsafePointer<SherpaOnnxOnlineRecognizerConfig>
   ) throws {
+    guard SherpaRuntimeSupportsRequiredAPI() != 0 else {
+      throw SherpaRuntimeError.incompatible
+    }
     guard let recognizer = SherpaOnnxCreateOnlineRecognizer(config) else { throw TranslatorError.modelUnavailable }
     guard let stream = SherpaOnnxCreateOnlineStream(recognizer) else {
       SherpaOnnxDestroyOnlineRecognizer(recognizer)
@@ -127,4 +130,9 @@ class SherpaOnnxRecognizer {
   func isEndpoint() -> Bool {
     return SherpaOnnxOnlineStreamIsEndpoint(recognizer, stream) != 0
   }
+}
+
+enum SherpaRuntimeError: LocalizedError {
+  case incompatible
+  var errorDescription: String? { "语音引擎与运行库版本不兼容，请安装更新后的客户端。已下载的模型可以保留。" }
 }
