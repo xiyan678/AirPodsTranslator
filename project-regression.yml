@@ -18,6 +18,8 @@ targets:
     sources: [Tests]
     dependencies:
       - target: AirPodsTranslator
+      - package: ArgmaxOSS
+        product: WhisperKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.eggplant1907.jet4469.tests

@@ -1,9 +1,35 @@
 import AVFoundation
 import XCTest
+import WhisperKit
 @testable import AirPodsTranslator
 
 @MainActor
 final class RecordedSpeechTests: XCTestCase {
+    func testSmallModelAgainstTheSameLectureAudio() async throws {
+        guard let audio = Bundle(for: Self.self).url(forResource: "lecture", withExtension: "wav") else {
+            throw XCTSkip("音频由专项语音回放工作流提供")
+        }
+        let file = try AVAudioFile(forReading: audio)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                                 frameCapacity: AVAudioFrameCount(file.length)))
+        try file.read(into: buffer)
+        let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+        let samples = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+        let folder = try await WhisperKit.download(variant: "small")
+        let model = try await WhisperKit(WhisperKitConfig(modelFolder: folder.path, load: true, download: false))
+        let started = Date.timeIntervalSinceReferenceDate
+        let results = try await model.transcribe(audioArray: samples, decodeOptions:
+            DecodingOptions(language: "en", detectLanguage: false, skipSpecialTokens: true, suppressBlank: true))
+        let actual = SpeechSegmentFilter.joinedText(results.flatMap(\.segments).map {
+            RecognizedSegment(text: $0.text, avgLogprob: $0.avgLogprob,
+                              compressionRatio: $0.compressionRatio, noSpeechProb: $0.noSpeechProb)
+        })
+        print("LECTURE_SMALL_RECOGNIZED: \(actual)")
+        print("LECTURE_SMALL_DECODE_SECONDS: \(Date.timeIntervalSinceReferenceDate - started)")
+        XCTAssertEqual(words(actual).filter { $0 == "accurate" }.count, 2)
+        XCTAssertEqual(words(actual).filter { $0 == "not" }.count, 6)
+    }
+
     func testEnglishLectureThroughActualLocalRecognitionAndCapture() async throws {
         let bundle = Bundle(for: Self.self)
         guard let audio = bundle.url(forResource: "lecture", withExtension: "wav"),
