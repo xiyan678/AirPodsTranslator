@@ -12,7 +12,7 @@ function fixture() {
   socket.send = data => sent.push(JSON.parse(data));
   socket.terminate = () => {};
   const speech = createSpeechSynthesizer(env, (url, options) => {
-    assert.equal(url, 'wss://ws-test.workspace.dashscope.aliyuncs.com/api-ws/v1/inference');
+    assert.equal(url, 'wss://ws-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference');
     assert.equal(options.headers.Authorization, 'Bearer private-test-key');
     return socket;
   });
@@ -25,6 +25,8 @@ test('speech waits for final completion and keeps all audio chunks in order', as
   f.socket.emit('open');
   assert.equal(f.sent.length, 1);
   assert.equal(f.sent[0].payload.model, 'cosyvoice-v3.5-plus');
+  assert.equal(f.sent[0].payload.parameters.text_type, 'PlainText');
+  assert.match(f.sent[0].header.task_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   assert.equal(f.sent[0].payload.parameters.voice, 'cosyvoice-v3.5-plus-bailian-20fde1dbc7b04884862ee1b54a2c128f');
   f.event('task-started');
   assert.deepEqual(f.sent.map(v => v.header.action), ['run-task', 'continue-task', 'finish-task']);

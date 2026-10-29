@@ -16,8 +16,8 @@ export function createSpeechSynthesizer(env, connect = (url, options) => new Web
       if (!configured) return Promise.reject(new Error('Speech service not configured'));
       return new Promise((resolve, reject) => {
         if (signal?.aborted) { reject(new Error('Speech request cancelled')); return; }
-        const taskID = randomUUID().replaceAll('-', '');
-        const socket = connect(`wss://${workspace}.workspace.dashscope.aliyuncs.com/api-ws/v1/inference`, {
+        const taskID = randomUUID();
+        const socket = connect(`wss://${workspace}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`, {
           headers: { Authorization: `Bearer ${key}` }, maxPayload: 4 * 1024 * 1024,
           handshakeTimeout: 10000, perMessageDeflate: false
         });
@@ -46,7 +46,7 @@ export function createSpeechSynthesizer(env, connect = (url, options) => new Web
           if (settled) return;
           send('run-task', {
             task_group: 'audio', task: 'tts', function: 'SpeechSynthesizer', model,
-            parameters: { voice, format: 'mp3', sample_rate: 24000, volume: 50, rate, pitch: 1 }, input: {}
+            parameters: { text_type: 'PlainText', voice, format: 'mp3', sample_rate: 24000, volume: 50, rate, pitch: 1 }, input: {}
           });
         });
         socket.on('message', (data, isBinary) => {
