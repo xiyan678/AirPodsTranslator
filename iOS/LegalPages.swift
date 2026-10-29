@@ -16,6 +16,8 @@ struct LegalDocument {
 enum AppLegal {
     static let publisher = "东莞市夕颜网络科技有限公司"
     static let authorProfileURL = URL(string: "https://www.douyin.com/user/MS4wLjABAAAAYImL2h_F25C_Z-EtpUYULY14g6utfK5yO8-QfAKNXqW67os8G5t5zG2LJ_yQ3G0R")!
+    // The amemv share-user route is registered in Douyin's iOS associated-domain file.
+    static let authorAppProfileURL = URL(string: "https://www.amemv.com/share/user/MS4wLjABAAAAYImL2h_F25C_Z-EtpUYULY14g6utfK5yO8-QfAKNXqW67os8G5t5zG2LJ_yQ3G0R/?sec_uid=MS4wLjABAAAAYImL2h_F25C_Z-EtpUYULY14g6utfK5yO8-QfAKNXqW67os8G5t5zG2LJ_yQ3G0R")!
 
     static let privacy = LegalDocument(
         title: "隐私政策",

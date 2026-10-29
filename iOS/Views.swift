@@ -428,7 +428,7 @@ struct SettingsView: View {
                 Section("关于") {
                     Button {
                         let application = UIApplication.shared
-                        application.open(AppLegal.authorProfileURL,
+                        application.open(AppLegal.authorAppProfileURL,
                                          options: [.universalLinksOnly: true]) { opened in
                             if !opened {
                                 Task { @MainActor in
