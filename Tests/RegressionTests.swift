@@ -521,6 +521,26 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(reopened.conversations.first?.lines.first?.id, entry.id)
     }
 
+    func testPendingSnapshotKeepsTextWithoutPersistingAnActiveTask() async throws {
+        let url = try directory()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ConversationStore(directory: url, summarize: { _ in "summary" })
+        let id = UUID()
+        var entry = line("first")
+        entry.translationPending = true
+        try await store.save([entry], id: id)
+        let saved = try XCTUnwrap(ConversationStore(directory: url).conversations.first?.lines.first)
+        XCTAssertEqual(saved.original, entry.original)
+        XCTAssertEqual(saved.translated, entry.translated)
+        XCTAssertEqual(saved.id, entry.id)
+        XCTAssertNotEqual(saved.translationPending, true)
+        XCTAssertNotNil(saved.translationIssue, "未确认的译文不能静默变成正式译文")
+        entry.translationPending = nil
+        try await store.save([entry], id: id)
+        XCTAssertEqual(store.conversations.count, 1)
+        XCTAssertNil(store.conversations.first?.lines.first?.translationIssue)
+    }
+
     func testRepeatedSaveUpdatesTheSameConversation() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }

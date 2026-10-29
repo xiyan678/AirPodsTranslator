@@ -183,6 +183,9 @@ struct TranscriptCard: View {
             Text(line.original).font(.system(size: size * 0.76)).foregroundStyle(StudioStyle.muted)
             Text(line.translated).font(.system(size: size, weight: .semibold, design: .rounded))
                 .foregroundStyle(StudioStyle.ink)
+            if let issue = line.translationIssue {
+                Text(issue).font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 if let onEdit { Button("修改并重译", action: onEdit) }
                 Spacer()

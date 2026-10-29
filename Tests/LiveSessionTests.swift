@@ -301,6 +301,22 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertFalse(controller.capture.isRecording)
     }
 
+    func testReplayCannotStopCaptureWhileLiveTranslationIsWaiting() async {
+        let gate = TranslationGate()
+        defer { gate.release() }
+        let controller = controller(translationGate: gate)
+        await controller.start()
+        let earlier = TranscriptLine(sourceLanguage: "en", targetLanguage: "zh",
+            original: "Earlier", translated: "之前", isMine: false)
+        controller.lines.append(earlier)
+        feedSentence(controller)
+        await eventually { gate.waiting && controller.phase == .listening }
+        controller.replay(earlier)
+        XCTAssertTrue(controller.capture.isRecording, "重播不能抢占仍有翻译任务的同传录音")
+        XCTAssertEqual(controller.phase, .listening)
+        controller.clearCurrent()
+    }
+
     func testNextSentenceIsCapturedWhileThePreviousTranslationIsWaiting() async {
         let gate = TranslationGate()
         defer { gate.release() }

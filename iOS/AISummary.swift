@@ -251,6 +251,7 @@ final class LiveSummary: ObservableObject {
     private var generation = UUID()
 
     func receive(_ lines: [TranscriptLine], conversationID: UUID) {
+        let lines = lines.filter { $0.translationPending != true }
         if self.conversationID != conversationID {
             cancel()
             self.conversationID = conversationID

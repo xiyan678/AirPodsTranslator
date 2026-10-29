@@ -271,7 +271,7 @@ final class ConversationController: ObservableObject {
         }
         $lines.sink { [weak self] lines in
             guard let self else { return }
-            self.summary.receive(lines.filter { $0.translationPending != true }, conversationID: self.conversationID)
+            self.summary.receive(lines, conversationID: self.conversationID)
             self.pictureInPicture.update(original: lines.last?.original ?? "", translation: lines.last?.translated ?? "")
         }.store(in: &observers)
         watch.onCommand = { [weak self] command in
@@ -506,6 +506,7 @@ final class ConversationController: ObservableObject {
             return
         }
         guard !draining, pending.isEmpty, waitingUtterance == nil,
+              liveTranslationWorkerID == nil, liveTranslations.isEmpty,
               phase == .listening || phase == .paused || phase == .idle else {
             status = "当前语音处理完后再重播"
             return
@@ -764,8 +765,8 @@ final class ConversationController: ObservableObject {
                   self.sessionID == input.session else { return }
             self.previewTask = nil
             self.previewRequestID = nil
-            self.completedPreview = input
             if self.latestPreview?.extends(input) == true, let translated {
+                self.completedPreview = input
                 self.liveTranslation = translated
             }
             // 慢翻译完成后直接处理最新稳定前缀，跳过中间已过时的预览。

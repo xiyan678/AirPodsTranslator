@@ -26,7 +26,11 @@ final class ConversationStore: ObservableObject {
         if FileManager.default.fileExists(atPath: file.path) {
             do {
                 let data = try Data(contentsOf: file)
-                conversations = try JSONDecoder().decode([SavedConversation].self, from: data)
+                conversations = try JSONDecoder().decode([SavedConversation].self, from: data).map { record in
+                    var restored = record
+                    restored.lines = Self.historySnapshot(record.lines)
+                    return restored
+                }
             } catch {
                 loadError = "对话记录无法读取，原文件已保留。"
             }
@@ -35,6 +39,7 @@ final class ConversationStore: ObservableObject {
 
     func save(_ lines: [TranscriptLine], id: UUID? = nil, outline: SummaryOutline? = nil) async throws {
         guard loadError == nil else { throw ConversationStoreError.unreadableHistory }
+        let lines = Self.historySnapshot(lines)
         guard !lines.isEmpty else { return }
         let lineIDs = lines.map(\.id)
         if let match = conversations.first(where: { Self.sameContent($0.lines, lines) && (id == nil || $0.id == id) }) {
@@ -83,12 +88,26 @@ final class ConversationStore: ObservableObject {
         conversations = updated
     }
 
+    // A saved snapshot has no running translation task. Keep its text, but make
+    // unfinished work explicit; the active controller retains its own queue.
+    private static func historySnapshot(_ lines: [TranscriptLine]) -> [TranscriptLine] {
+        lines.map { line in
+            guard line.translationPending == true else { return line }
+            var saved = line
+            saved.translationPending = nil
+            saved.translationIssue = line.translated.isEmpty
+                ? "保存时翻译尚未完成，原文已保留" : "保存时翻译尚未完成，暂存译文待确认"
+            return saved
+        }
+    }
+
     private static func sameContent(_ left: [TranscriptLine], _ right: [TranscriptLine]) -> Bool {
         guard left.count == right.count else { return false }
         return zip(left, right).allSatisfy { pair in
             let (a, b) = pair
             return a.id == b.id && a.original == b.original && a.translated == b.translated &&
-            a.sourceLanguage == b.sourceLanguage && a.targetLanguage == b.targetLanguage && a.isMine == b.isMine
+            a.sourceLanguage == b.sourceLanguage && a.targetLanguage == b.targetLanguage && a.isMine == b.isMine &&
+            a.translationIssue == b.translationIssue && a.translationPending == b.translationPending
         }
     }
 
