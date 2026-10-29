@@ -45,11 +45,25 @@ struct ConversationServices {
             fallback: { samples, language, context in
                 try await whisper.recognize(samples, language: language, context: context)
             },
-            detect: { try await whisper.detectLanguage($0) }
+            detect: { try await whisper.detectLanguage($0) },
+            nativeFactory: { language in
+                if SherpaSpeech.supports(language) {
+                    try await sherpa.prepare()
+                    return SherpaSpeechSession(service: sherpa, language: language)
+                }
+                return try await AppleSpeechSession.make(language: language)
+            }
         )
         let prepare: @MainActor (String?) async throws -> Void = { language in
             recognizer.reset()
             sherpa.reset()
+            if language == nil {
+                // Detect language before selecting a bilingual decoder; otherwise every
+                // unknown language would be forced through Chinese/English recognition.
+                try await whisper.prepare()
+                try await sherpa.prepare()
+                return
+            }
             if SherpaSpeech.supports(language) { try await sherpa.prepare(); return }
             if let language, await AppleSpeechSession.installedTranscriber(language: language) != nil { return }
             try await whisper.prepare()

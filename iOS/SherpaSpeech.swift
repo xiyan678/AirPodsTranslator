@@ -8,7 +8,7 @@ final class SherpaSpeech {
     private var engine: SherpaStreamingEngine?
     private var preparation: Task<SherpaStreamingEngine, Error>?
     private var needsReset = false
-    static func supports(_ language: String?) -> Bool { language == nil || language == "en" || language == "zh" }
+    static func supports(_ language: String?) -> Bool { language == "en" || language == "zh" }
 
     func prepare() async throws {
         if engine != nil { return }
@@ -49,10 +49,25 @@ final class SherpaSpeech {
         try await prepare()
         try Task.checkCancellation()
         guard let engine else { throw TranslatorError.modelUnavailable }
-        if needsReset { needsReset = false; await engine.reset() }
+        if needsReset { try await engine.reset(); needsReset = false }
         return try await engine.update(samples, language: language, final: final)
     }
     func reset() { needsReset = true }
+}
+
+@MainActor
+final class SherpaSpeechSession: IncrementalSpeechSession {
+    private let service: SherpaSpeech
+    private let language: String
+    private var cancelled = false
+    init(service: SherpaSpeech, language: String) { self.service = service; self.language = language }
+    func update(_ samples: [Float], final: Bool) async throws -> SpeechRecognitionUpdate {
+        guard !cancelled else { throw CancellationError() }
+        let result = try await service.recognize(samples, language: language, final: final)
+        guard !cancelled else { throw CancellationError() }
+        return result
+    }
+    func cancel() { cancelled = true; service.reset() }
 }
 
 /// Serial actor keeps ONNX inference off the UI thread and owns the incremental stream.
@@ -65,16 +80,37 @@ actor SherpaStreamingEngine {
         return engine
     }
     private func load(_ directory: URL) throws {
-        let transducer = sherpaOnnxOnlineTransducerModelConfig(
-            encoder: directory.appendingPathComponent("encoder-epoch-99-avg-1.int8.onnx").path,
-            decoder: directory.appendingPathComponent("decoder-epoch-99-avg-1.onnx").path,
-            joiner: directory.appendingPathComponent("joiner-epoch-99-avg-1.int8.onnx").path)
-        let model = sherpaOnnxOnlineModelConfig(tokens: directory.appendingPathComponent("tokens.txt").path,
-            transducer: transducer, numThreads: 2, modelType: "zipformer")
-        var config = sherpaOnnxOnlineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(),
-            modelConfig: model, decodingMethod: "modified_beam_search", maxActivePaths: 4)
+        let names = ["encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.onnx",
+                     "joiner-epoch-99-avg-1.int8.onnx", "tokens.txt"]
+        // C config holds borrowed pointers. Own every string until native creation returns.
+        let values = names.map { directory.appendingPathComponent($0).path } +
+            ["cpu", "zipformer", "modified_beam_search", "cjkchar", ""]
+        var pointers: [UnsafeMutablePointer<CChar>] = []
+        defer { pointers.forEach { free($0) } }
+        for value in values {
+            guard let pointer = strdup(value) else { throw TranslatorError.modelUnavailable }
+            pointers.append(pointer)
+        }
+        var config = SherpaOnnxOnlineRecognizerConfig()
+        config.feat_config.sample_rate = 16_000
+        config.feat_config.feature_dim = 80
+        config.model_config.transducer.encoder = UnsafePointer(pointers[0])
+        config.model_config.transducer.decoder = UnsafePointer(pointers[1])
+        config.model_config.transducer.joiner = UnsafePointer(pointers[2])
+        config.model_config.tokens = UnsafePointer(pointers[3])
+        config.model_config.num_threads = 2
+        config.model_config.provider = UnsafePointer(pointers[4])
+        config.model_config.model_type = UnsafePointer(pointers[5])
+        config.decoding_method = UnsafePointer(pointers[6])
+        config.model_config.modeling_unit = UnsafePointer(pointers[7])
+        config.model_config.bpe_vocab = UnsafePointer(pointers[8])
+        config.max_active_paths = 4
+        config.rule1_min_trailing_silence = 2.4
+        config.rule2_min_trailing_silence = 1.2
+        config.rule3_min_utterance_length = 30
         recognizer = try SherpaOnnxRecognizer(config: &config)
     }
+
     func update(_ samples: [Float], language: String?, final: Bool) throws -> SpeechRecognitionUpdate {
         try Task.checkCancellation()
         guard let recognizer, samples.count >= submitted, samples.allSatisfy(\.isFinite) else {
@@ -89,8 +125,8 @@ actor SherpaStreamingEngine {
         while recognizer.isReady() { try Task.checkCancellation(); recognizer.decode() }
         let text = try recognizer.getResult().text
         let detected = language ?? (NLLanguageRecognizer.dominantLanguage(for: text)?.rawValue.hasPrefix("zh") == true ? "zh" : "en")
-        if final { reset() }
+        if final { try reset() }
         return SpeechRecognitionUpdate(text: text, language: detected)
     }
-    func reset() { recognizer?.reset(); submitted = 0 }
+    func reset() throws { try recognizer?.reset(); submitted = 0 }
 }

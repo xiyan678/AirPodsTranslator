@@ -5,6 +5,30 @@ import WhisperKit
 
 @MainActor
 final class RecordedSpeechTests: XCTestCase {
+    func testSherpaFreshWindowsRemainUsableAfterInputFinished() async throws {
+        guard let audio = Bundle(for: Self.self).url(forResource: "lecture", withExtension: "wav") else {
+            throw XCTSkip("音频由专项语音回放工作流提供")
+        }
+        let file = try AVAudioFile(forReading: audio)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                                 frameCapacity: AVAudioFrameCount(file.length)))
+        try file.read(into: buffer)
+        let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+        let samples = Array(UnsafeBufferPointer(start: channel, count: min(Int(buffer.frameLength), 8 * 16_000)))
+        let service = SherpaSpeech()
+        try await service.prepare()
+        var baseline: String?
+        for window in 0..<3 {
+            service.reset()
+            _ = try await service.recognize(Array(samples.prefix(16_000)), language: "en", final: false)
+            let result = try await service.recognize(samples, language: "en", final: true)
+            XCTAssertFalse(result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if let baseline { XCTAssertEqual(result.text, baseline, "新窗口不能沿用已结束的特征提取器或前一窗口的音频") }
+            else { baseline = result.text }
+            print("SHERPA_WINDOW_\(window): \(result.text)")
+        }
+    }
+
     func testSmallModelAgainstTheSameLectureAudio() async throws {
         guard let audio = Bundle(for: Self.self).url(forResource: "lecture", withExtension: "wav") else {
             throw XCTSkip("音频由专项语音回放工作流提供")
