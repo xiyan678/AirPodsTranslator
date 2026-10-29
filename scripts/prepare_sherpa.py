@@ -8,11 +8,29 @@ import shutil
 import tempfile
 import urllib.request
 import tarfile
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "ThirdParty/SherpaOnnx/Artifacts/paired-ios"
 DIGEST = "63572187c200d70e1b09b47f1bf4e3435ea1c9ced4ca656268fa7d0b94e12610"
 URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.3/sherpa-onnx-v1.13.3-ios-no-tts.tar.bz2"
+LAYOUT = 3
+
+
+def onnx_module_map(headers: Path):
+    pending = ["onnxruntime_c_api.h"]
+    declared = set()
+    while pending:
+        name = pending.pop()
+        if name in declared:
+            continue
+        path = headers / name
+        if not path.is_file():
+            continue
+        declared.add(name)
+        pending.extend(re.findall(r'^\s*#\s*include\s*"([^"\n]+)"', path.read_text(), re.MULTILINE))
+    declarations = "\n".join(f'  header "{name}"' for name in sorted(declared))
+    return f"framework module onnxruntime {{\n{declarations}\n  export *\n}}\n"
 
 
 def prepare_pair(unpacked: Path, prepared: Path):
@@ -35,7 +53,7 @@ def prepare_pair(unpacked: Path, prepared: Path):
                 modules = framework / "Modules"
                 modules.mkdir(exist_ok=True)
                 (modules / "module.modulemap").write_text(
-                    'framework module onnxruntime { header "onnxruntime_c_api.h" export * }\n')
+                    onnx_module_map(framework / "Headers"))
                 header = (framework / "Headers/onnxruntime_c_api.h").read_text()
                 if "#define ORT_API_VERSION 26" not in header:
                     raise RuntimeError("Unexpected ONNX Runtime ABI")
@@ -60,7 +78,7 @@ def file_digests(directory: Path):
 def cache_valid(directory: Path):
     try:
         marker = json.loads((directory / "prepared.json").read_text())
-        if marker.get("sha256") != DIGEST or marker.get("layout") != 2:
+        if marker.get("sha256") != DIGEST or marker.get("layout") != LAYOUT:
             return False
         expected = marker.get("files")
         return isinstance(expected, dict) and "Info.plist" in expected and expected == file_digests(directory)
@@ -99,7 +117,7 @@ def main():
         prepared = temp / "prepared"
         prepare_pair(unpacked, prepared)
         (prepared / "prepared.json").write_text(json.dumps({
-            "sha256": DIGEST, "layout": 2, "files": file_digests(prepared)
+            "sha256": DIGEST, "layout": LAYOUT, "files": file_digests(prepared)
         }))
         if OUTPUT.exists():
             if OUTPUT.resolve().parent != (ROOT / "ThirdParty/SherpaOnnx/Artifacts").resolve():

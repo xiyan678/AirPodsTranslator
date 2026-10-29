@@ -15,7 +15,7 @@ class ArtifactCacheTests(unittest.TestCase):
         self.binary.parent.mkdir(parents=True)
         self.binary.write_bytes(b"static archive")
         (self.root / "prepared.json").write_text(json.dumps({
-            "sha256": prepare.DIGEST, "layout": 2,
+            "sha256": prepare.DIGEST, "layout": prepare.LAYOUT,
             "files": prepare.file_digests(self.root)
         }))
 
@@ -37,6 +37,19 @@ class ArtifactCacheTests(unittest.TestCase):
     def test_old_marker_only_cache_is_not_trusted(self):
         (self.root / "prepared.json").write_text(json.dumps({"sha256": prepare.DIGEST, "layout": 1}))
         self.assertFalse(prepare.cache_valid(self.root))
+
+
+class ModuleMapTests(unittest.TestCase):
+    def test_transitive_c_headers_are_declared_without_cpp_headers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            headers = Path(directory)
+            (headers / "onnxruntime_c_api.h").write_text('#include "onnxruntime_ep_c_api.h"\n')
+            (headers / "onnxruntime_ep_c_api.h").write_text('#include "onnxruntime_c_api.h"\n')
+            (headers / "onnxruntime_cxx_api.h").write_text('#include <vector>\n')
+            result = prepare.onnx_module_map(headers)
+            self.assertIn('header "onnxruntime_c_api.h"', result)
+            self.assertIn('header "onnxruntime_ep_c_api.h"', result)
+            self.assertNotIn('onnxruntime_cxx_api.h', result)
 
 
 if __name__ == "__main__":
