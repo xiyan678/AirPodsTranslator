@@ -491,6 +491,7 @@ struct LanguagePacksView: View {
     @State private var message = ""
     @State private var resources: [InstalledResource] = []
     @State private var pairStatus = "正在检查…"
+    @State private var preparationRunning = false
     private struct InstalledResource: Identifiable {
         var id: String { title }
         let title: String
@@ -518,6 +519,7 @@ struct LanguagePacksView: View {
                 }
                 let source = reverse ? preferences.preferredLanguage : selected
                 let target = reverse ? selected : preferences.preferredLanguage
+                message = ""
                 requestedPair = (source, target)
                 config = TranslationConfigurationFactory.make(
                     source: source, target: target, mode: preferences.processingMode
@@ -535,7 +537,9 @@ struct LanguagePacksView: View {
                     HStack {
                         Text(item.title)
                         Spacer()
-                        Text(item.status).foregroundStyle(.secondary)
+                        Text(item.title.hasPrefix("中英语音模型")
+                             ? (sherpa.loading ? "准备中" : SherpaSpeech.installed ? "已下载" : sherpa.lastError != nil ? "准备失败" : "未下载")
+                             : item.status).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -553,11 +557,21 @@ struct LanguagePacksView: View {
             if !loading { Task { await refreshResources() } }
         }
         .translationTask(config) { session in
-            guard let requestedPair else { return }
+            guard let requestedPair, !preparationRunning else { return }
+            preparationRunning = true
             do {
                 let unavailable = try await OfflineLanguageResources.live.prepare(
                     source: requestedPair.source, target: requestedPair.target
-                ) { try await prepareLanguagePack(session) }
+                ) {
+                    let availability: LanguageAvailability
+                    if #available(iOS 26.4, *) {
+                        availability = LanguageAvailability(preferredStrategy: preferences.processingMode == .quality ? .highFidelity : .lowLatency)
+                    } else { availability = LanguageAvailability() }
+                    let installed = await availability.status(
+                        from: Locale.Language(identifier: requestedPair.source),
+                        to: Locale.Language(identifier: requestedPair.target)) == .installed
+                    if !installed { try await prepareLanguagePack(session) }
+                }
                 if unavailable.isEmpty {
                     message = "离线翻译和语音识别已就绪"
                 } else {
@@ -567,8 +581,13 @@ struct LanguagePacksView: View {
             } catch {
                 if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
                     message = "已取消准备语言包"
+                } else if error is URLError {
+                    message = "网络连接中断，准备未完成。已安装的语言包仍会保留，请稍后重试。"
                 } else { message = error.localizedDescription }
             }
+            // Release the spinner before the asynchronous inventory refresh. A late
+            // refresh must not clear a new request started by the retry button.
+            preparationRunning = false
             config = nil
             self.requestedPair = nil
             await refreshResources()

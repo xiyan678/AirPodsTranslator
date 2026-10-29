@@ -9,6 +9,7 @@ final class SherpaSpeech: ObservableObject {
     static let shared = SherpaSpeech()
     @Published private(set) var loading = false
     @Published private(set) var stage = ""
+    @Published private(set) var lastError: String?
     static let files: [(String, Int)] = [
         ("encoder-epoch-99-avg-1.int8.onnx", 181895032),
         ("decoder-epoch-99-avg-1.onnx", 13876452),
@@ -34,8 +35,18 @@ final class SherpaSpeech: ObservableObject {
         if engine != nil { return }
         if let preparation { engine = try await preparation.value; return }
         loading = true
+        lastError = nil
         defer { loading = false }
         let task = Task<SherpaStreamingEngine, Error> {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = 60
+            configuration.timeoutIntervalForResource = 600
+            let session = URLSession(configuration: configuration)
+            defer { session.invalidateAndCancel() }
+            let downloader = ModelFileDownloader(download: { url, resumeData in
+                if let resumeData { return try await session.download(resumeFrom: resumeData) }
+                return try await session.download(from: url)
+            })
             let directory = try Self.modelDirectory()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             for (index, file) in Self.files.enumerated() {
@@ -44,13 +55,15 @@ final class SherpaSpeech: ObservableObject {
                 let path = directory.appendingPathComponent(name)
                 if (try? path.resourceValues(forKeys: [.fileSizeKey]).fileSize) == size { continue }
                 self.stage = "正在下载中英语音模型（\(index + 1)/\(Self.files.count)）"
-                let url = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/\(name)")!
-                let (temporary, response) = try await URLSession.shared.download(from: url)
+                let url = URL(string: "https://download.duwang.win/models/sherpa-zh-en/\(name)")!
+                let temporary: URL
+                do {
+                    temporary = try await downloader.fetch(url, expectedSize: size) { attempt in
+                        self.stage = "网络中断，正在重试（\(attempt)/3；文件 \(index + 1)/4）"
+                    }
+                } catch is CancellationError { throw CancellationError() }
+                catch { throw ModelDownloadFailure.failed }
                 defer { try? FileManager.default.removeItem(at: temporary) }
-                guard (response as? HTTPURLResponse)?.statusCode == 200,
-                      (try temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize) == size else {
-                    throw URLError(.badServerResponse)
-                }
                 try Task.checkCancellation()
                 if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
                 try FileManager.default.moveItem(at: temporary, to: path)
@@ -60,7 +73,14 @@ final class SherpaSpeech: ObservableObject {
         }
         preparation = task
         defer { preparation = nil }
-        engine = try await task.value
+        do {
+            engine = try await task.value
+            stage = "中英语音模型已就绪"
+        } catch {
+            lastError = error is CancellationError ? "已取消下载" : error.localizedDescription
+            stage = "准备未完成"
+            throw error
+        }
     }
 
     func recognize(_ samples: [Float], language: String?, final: Bool) async throws -> SpeechRecognitionUpdate {
