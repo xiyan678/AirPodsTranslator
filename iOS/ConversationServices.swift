@@ -40,6 +40,7 @@ struct ConversationServices {
 
     static func live(whisper: WhisperService, capture: AudioCapture) -> Self {
         let translator = LocalTranslator()
+        let sherpa = SherpaSpeech()
         let recognizer = AdaptiveSpeechRecognizer(
             fallback: { samples, language, context in
                 try await whisper.recognize(samples, language: language, context: context)
@@ -48,6 +49,8 @@ struct ConversationServices {
         )
         let prepare: @MainActor (String?) async throws -> Void = { language in
             recognizer.reset()
+            sherpa.reset()
+            if SherpaSpeech.supports(language) { try await sherpa.prepare(); return }
             if let language, await AppleSpeechSession.installedTranscriber(language: language) != nil { return }
             try await whisper.prepare()
         }
@@ -56,6 +59,10 @@ struct ConversationServices {
             requestMicrophonePermission: { await AVAudioApplication.requestRecordPermission() },
             startCapture: { try capture.start() },
             recognition: { samples, language in
+                if SherpaSpeech.supports(language) {
+                    let update = try await sherpa.recognize(samples, language: language, final: true)
+                    return (text: update.text, language: update.language)
+                }
                 let update = try await recognizer.recognize(samples, language: language, final: true)
                 return (text: update.text, language: update.language)
             },
@@ -63,10 +70,13 @@ struct ConversationServices {
                 try await translator.translate(text, from: source, to: target,
                                                mode: mode, preparedSession: prepared)
             },
-            partialRecognition: { try await recognizer.recognize($0, language: $1, final: false) },
+            partialRecognition: { samples, language in
+                if SherpaSpeech.supports(language) { return try await sherpa.recognize(samples, language: language, final: false) }
+                return try await recognizer.recognize(samples, language: language, final: false)
+            },
             commitRecognition: { recognizer.commit($0, language: $1) },
-            resetRecognition: { recognizer.reset() },
-            resetRecognitionWindow: { recognizer.resetWindow() },
+            resetRecognition: { recognizer.reset(); sherpa.reset() },
+            resetRecognitionWindow: { recognizer.resetWindow(); sherpa.reset() },
             prepareRecognition: { try await prepare($0) }
         )
     }
