@@ -158,7 +158,13 @@ final class LiveSessionTests: XCTestCase {
         defer { controller.preferences.autoReadAloud = savedAutoRead }
         controller.preferences.autoReadAloud = true
         await controller.start()
-        feedSentence(controller)
+        capture.feedExternal(Array(repeating: 0.2, count: 64_000))
+        capture.feedExternal(Array(repeating: 0, count: 8_000))
+        await eventually { !controller.liveText.isEmpty }
+        XCTAssertTrue(spoken.isEmpty, "说话中的预览不得触发朗读")
+        XCTAssertTrue(controller.lines.isEmpty, "换气时不得保存半句话")
+        capture.feedExternal(Array(repeating: 0.2, count: 16_000))
+        capture.feedExternal(Array(repeating: 0, count: 28_800))
         await eventually { spoken.count == 1 }
         XCTAssertTrue(capture.isRecording)
         feedSentence(controller)

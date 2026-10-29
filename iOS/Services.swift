@@ -540,7 +540,7 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     func enqueue(_ text: String, language: String, rate: Float) -> Bool {
         guard let voice = AVSpeechSynthesisVoice(language: language) ??
                 AVSpeechSynthesisVoice.speechVoices().first(where: {
-                    $0.language.hasPrefix(language)
+                    AppLanguage.normalizedCode($0.language) == language
                 }) else { return false }
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
