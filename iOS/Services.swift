@@ -257,14 +257,9 @@ enum TranslationConfigurationFactory {
 
 @MainActor
 final class LocalTranslator {
-    private var translatedTerms: [String: String] = [:]
-
     func translate(_ text: String, from source: String, to target: String,
-                   mode: ProcessingMode, terms: [Term], preparedSession: TranslationSession? = nil) async throws -> String {
+                   mode: ProcessingMode, preparedSession: TranslationSession? = nil) async throws -> String {
         if source == target { return text }
-        if let exact = terms.first(where: { $0.source.localizedCaseInsensitiveCompare(text) == .orderedSame }) {
-            return exact.replacement
-        }
         let session: TranslationSession
         if let preparedSession {
             session = preparedSession
@@ -294,23 +289,7 @@ final class LocalTranslator {
             }
         }
         let response = try await session.translate(text)
-        var translated = response.targetText
-        for term in terms where !term.source.isEmpty &&
-            text.range(of: term.source, options: .caseInsensitive) != nil {
-            let key = "\(source)|\(target)|\(mode.rawValue)|\(term.source.lowercased())"
-            let outputTerm: String
-            if let cached = translatedTerms[key] {
-                outputTerm = cached
-            } else {
-                guard let termTranslation = try? await session.translate(term.source) else { continue }
-                outputTerm = termTranslation.targetText
-                translatedTerms[key] = outputTerm
-            }
-            guard !outputTerm.isEmpty else { continue }
-            translated = translated.replacingOccurrences(of: outputTerm, with: term.replacement,
-                                                          options: .caseInsensitive)
-        }
-        return translated
+        return response.targetText
     }
 }
 

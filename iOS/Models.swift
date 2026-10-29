@@ -63,12 +63,6 @@ struct SavedConversation: Identifiable, Codable {
     var outline: SummaryOutline? = nil
 }
 
-struct Term: Identifiable, Codable {
-    var id = UUID()
-    var source: String
-    var replacement: String
-}
-
 struct LanguageOption: Identifiable {
     let code: String
     let name: String

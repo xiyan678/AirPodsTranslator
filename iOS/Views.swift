@@ -372,8 +372,6 @@ struct HistoryView: View {
 struct SettingsView: View {
     @EnvironmentObject private var controller: ConversationController
     @ObservedObject var preferences: Preferences
-    @State private var termSource = ""
-    @State private var termReplacement = ""
     @State private var showManageSubscriptions = false
     var body: some View {
         NavigationStack {
@@ -446,25 +444,7 @@ struct SettingsView: View {
                     NavigationLink("隐私政策") { LegalPageView(document: AppLegal.privacy) }
                     LabeledContent("发布者", value: AppLegal.publisher)
                 }
-                Section("专有词汇") {
-                    if let termsError = preferences.termsError {
-                        Text(termsError).foregroundStyle(.red)
-                    } else {
-                        TextField("识别到的词", text: $termSource)
-                        TextField("希望显示的译词", text: $termReplacement)
-                        Button("添加") {
-                            let source = termSource.trimmingCharacters(in: .whitespaces)
-                            let replacement = termReplacement.trimmingCharacters(in: .whitespaces)
-                            guard !source.isEmpty, !replacement.isEmpty else { return }
-                            preferences.terms.append(Term(source: source, replacement: replacement))
-                            termSource = ""; termReplacement = ""
-                        }
-                        ForEach(preferences.terms) { term in
-                            HStack { Text(term.source); Spacer(); Text(term.replacement).foregroundStyle(.secondary) }
-                        }
-                        .onDelete { preferences.terms.remove(atOffsets: $0) }
-                    }
-                }
+
             }
             .navigationTitle("设置")
             .scrollContentBackground(.hidden)

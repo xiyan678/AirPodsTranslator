@@ -646,7 +646,7 @@ final class ConversationController: ObservableObject {
             guard let self else { return }
             do {
                 let translated = try await self.translator.translate(text, from: source, to: target,
-                    mode: self.preferences.processingMode, terms: self.preferences.terms)
+                    mode: self.preferences.processingMode)
                 guard !Task.isCancelled, self.previewRequestID == token,
                       self.sessionID == session, self.liveText == text else { return }
                 self.liveTranslation = translated
@@ -705,7 +705,7 @@ final class ConversationController: ObservableObject {
             status = "正在翻译 \(AppLanguage.name(item.source))…"
             let translated = try await translator.translate(item.text, from: item.source,
                                                              to: item.target, mode: preferences.processingMode,
-                                                             terms: preferences.terms, preparedSession: preparedSession)
+                                                             preparedSession: preparedSession)
             guard sessionID == item.sessionID else { return }
             let line = TranscriptLine(sourceLanguage: item.source, targetLanguage: item.target,
                                       original: item.text, translated: translated, isMine: item.mine)
@@ -866,7 +866,7 @@ final class ConversationController: ObservableObject {
             status = "正在重新翻译上一句…"
             let result = try await translator.translate(revision.text, from: revision.source,
                                                         to: revision.target, mode: preferences.processingMode,
-                                                        terms: preferences.terms, preparedSession: preparedSession)
+                                                        preparedSession: preparedSession)
             guard revisionID == revision.revisionID, lines.last?.id == revision.lineID else { return }
             guard let index = lines.indices.last else { return }
             lines[index].original = revision.text
@@ -985,7 +985,7 @@ final class ConversationController: ObservableObject {
         guard textRequestID == requestID else { return }
         do {
             let result = try await translator.translate(text, from: source, to: target,
-                                                        mode: preferences.processingMode, terms: preferences.terms, preparedSession: preparedSession)
+                                                        mode: preferences.processingMode, preparedSession: preparedSession)
             guard textRequestID == requestID else { return }
             textRequestTimeout?.cancel()
             textRequestTimeout = nil
@@ -1086,7 +1086,7 @@ final class ConversationController: ObservableObject {
         do {
             let translation = try await translator.translate(text, from: source, to: target,
                                                               mode: preferences.processingMode,
-                                                              terms: preferences.terms, preparedSession: preparedSession)
+                                                              preparedSession: preparedSession)
             guard imageRequestID == requestID else { return }
             imageTranslation = translation
         } catch {

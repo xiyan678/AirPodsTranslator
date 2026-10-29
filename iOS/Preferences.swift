@@ -27,21 +27,4 @@ final class Preferences: ObservableObject {
     @Published var saveAutomatically = UserDefaults.standard.bool(forKey: "saveAutomatically") {
         didSet { UserDefaults.standard.set(saveAutomatically, forKey: "saveAutomatically") }
     }
-    @Published private(set) var termsError: String?
-    @Published var terms: [Term] = [] {
-        didSet { persistTerms() }
-    }
-
-    init() {
-        if let data = UserDefaults.standard.data(forKey: "terms") {
-            do { terms = try JSONDecoder().decode([Term].self, from: data) }
-            catch { termsError = "术语数据无法读取，原数据已保留。" }
-        }
-    }
-
-    private func persistTerms() {
-        guard termsError == nil else { return }
-        guard let data = try? JSONEncoder().encode(terms) else { return }
-        UserDefaults.standard.set(data, forKey: "terms")
-    }
 }
