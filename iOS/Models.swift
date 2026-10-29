@@ -141,6 +141,7 @@ struct TranscriptLine: Identifiable, Codable {
     var isMine: Bool
     /// 可选字段兼容旧历史；失败时仍保存真实原文，错误提示不混入译文或总结。
     var translationIssue: String? = nil
+    var translationPending: Bool? = nil
 }
 
 struct SavedConversation: Identifiable, Codable {

@@ -161,9 +161,13 @@ actor SherpaStreamingEngine {
 
     func update(_ samples: [Float], language: String?, final: Bool) throws -> SpeechRecognitionUpdate {
         try Task.checkCancellation()
-        guard let recognizer, samples.count >= submitted, samples.allSatisfy(\.isFinite) else {
+        guard let recognizer, samples.allSatisfy(\.isFinite) else {
             throw TranslatorError.recordingFailed
         }
+        // Capture trims trailing silence / chooses a quiet cut after a longer
+        // preview was submitted. Replay that final slice on a fresh stream so
+        // both its words and the audio after the cut remain correctly assigned.
+        if samples.count < submitted { try reset() }
         if samples.count > submitted { recognizer.acceptWaveform(samples: Array(samples.dropFirst(submitted))) }
         submitted = samples.count
         if final {

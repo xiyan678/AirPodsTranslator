@@ -27,6 +27,15 @@ final class RecordedSpeechTests: XCTestCase {
             else { baseline = result.text }
             print("SHERPA_WINDOW_\(window): \(result.text)")
         }
+        service.reset()
+        _ = try await service.recognize(samples, language: "en", final: false)
+        let trimmed = Array(samples.prefix(max(1, samples.count - 8_000)))
+        let afterLongPreview = try await service.recognize(trimmed, language: "en", final: true)
+        service.reset()
+        let fresh = try await service.recognize(trimmed, language: "en", final: true)
+        XCTAssertFalse(afterLongPreview.text.isEmpty)
+        XCTAssertEqual(afterLongPreview.text, fresh.text,
+                       "最终音频短于已提交预览时，应重放切片，不能报错丢掉整句")
     }
 
     func testSmallModelAgainstTheSameLectureAudio() async throws {

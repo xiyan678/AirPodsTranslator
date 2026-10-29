@@ -120,11 +120,20 @@ final class ConversationController: ObservableObject {
     }
 
     private struct PendingUtterance {
+        let id: UUID
         let text: String
         let source: String
         let target: String
         let mine: Bool
         let sessionID: UUID
+        init(text: String, source: String, target: String, mine: Bool, sessionID: UUID, id: UUID = UUID()) {
+            self.id = id
+            self.text = text
+            self.source = source
+            self.target = target
+            self.mine = mine
+            self.sessionID = sessionID
+        }
     }
 
     private struct ModeSession {
@@ -262,7 +271,7 @@ final class ConversationController: ObservableObject {
         }
         $lines.sink { [weak self] lines in
             guard let self else { return }
-            self.summary.receive(lines, conversationID: self.conversationID)
+            self.summary.receive(lines.filter { $0.translationPending != true }, conversationID: self.conversationID)
             self.pictureInPicture.update(original: lines.last?.original ?? "", translation: lines.last?.translated ?? "")
         }.store(in: &observers)
         watch.onCommand = { [weak self] command in
@@ -639,7 +648,7 @@ final class ConversationController: ObservableObject {
             if !pausedUtterances.isEmpty {
                 let item = pausedUtterances.removeFirst()
                 let restored = PendingUtterance(text: item.text, source: item.source,
-                    target: item.target, mine: item.mine, sessionID: session)
+                    target: item.target, mine: item.mine, sessionID: session, id: item.id)
                 restoringUtterance = restored
                 transition(to: .recognizing)
                 if mode == .listen { enqueueLiveTranslation(restored) }
@@ -779,18 +788,25 @@ final class ConversationController: ObservableObject {
         do {
             let recognized = try await services.recognize(samples, language: selectedLanguage)
             guard sessionID == activeSession else { return }
-            clearLivePreview()
             guard let recognizedText = RecognizedSpeechText.cleaned(recognized.text) else {
+                clearLivePreview()
                 transition(to: .listening)
                 return
             }
             let source = selectedLanguage ?? AppLanguage.normalizedCode(recognized.language)
             if let item = makeUtterance(recognizedText, source: source, session: activeSession) {
                 if mode == .listen {
-                    enqueueLiveTranslation(item)
+                    let preview: String
+                    if let completedPreview, completedPreview.session == activeSession,
+                       completedPreview.source == source, completedPreview.target == item.target,
+                       recognizedText.hasPrefix(completedPreview.text) {
+                        preview = liveTranslation
+                    } else { preview = "" }
+                    enqueueLiveTranslation(item, preview: preview)
+                    clearLivePreview()
                     transition(to: .listening)
-                } else { await translateAndPlay(item) }
-            } else { transition(to: .listening) }
+                } else { clearLivePreview(); await translateAndPlay(item) }
+            } else { clearLivePreview(); transition(to: .listening) }
         } catch {
             guard sessionID == activeSession else { return }
             status = "没听清，继续倾听…"
@@ -837,7 +853,13 @@ final class ConversationController: ObservableObject {
         throw URLError(.unknown)
     }
 
-    private func enqueueLiveTranslation(_ item: PendingUtterance) {
+    private func enqueueLiveTranslation(_ item: PendingUtterance, preview: String = "") {
+        if !lines.contains(where: { $0.id == item.id }) {
+            var line = TranscriptLine(id: item.id, sourceLanguage: item.source, targetLanguage: item.target,
+                                      original: item.text, translated: preview, isMine: item.mine)
+            line.translationPending = true
+            lines.append(line)
+        }
         liveTranslations.append(item)
         guard liveTranslationWorkerID == nil else { return }
         let workerID = UUID()
@@ -875,9 +897,14 @@ final class ConversationController: ObservableObject {
             if !backgroundLive { clearLivePreview() }
             let translated = try await translateLive(item, preparedSession: preparedSession)
             guard sessionID == item.sessionID else { return }
-            let line = TranscriptLine(sourceLanguage: item.source, targetLanguage: item.target,
+            let line = TranscriptLine(id: item.id, sourceLanguage: item.source, targetLanguage: item.target,
                                       original: item.text, translated: translated, isMine: item.mine)
-            lines.append(line)
+            if let index = lines.firstIndex(where: { $0.id == item.id }) {
+                var completed = line
+                completed.time = lines[index].time
+                lines[index] = completed
+            }
+            else { lines.append(line) }
             if !backgroundLive {
                 activeSamples = nil
                 if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }
@@ -941,10 +968,18 @@ final class ConversationController: ObservableObject {
                 requestLanguagePack(from: source, to: target)
                 return
             }
-            var untranslated = TranscriptLine(sourceLanguage: item.source, targetLanguage: item.target,
+            var untranslated = TranscriptLine(id: item.id, sourceLanguage: item.source, targetLanguage: item.target,
                 original: item.text, translated: "", isMine: item.mine)
             untranslated.translationIssue = "翻译未完成，原文已保留"
-            lines.append(untranslated)
+            if let index = lines.firstIndex(where: { $0.id == item.id }) {
+                untranslated.time = lines[index].time
+                if !lines[index].translated.isEmpty {
+                    untranslated.translated = lines[index].translated
+                    untranslated.translationIssue = "正式翻译未完成，暂存译文待确认"
+                }
+                lines[index] = untranslated
+            }
+            else { lines.append(untranslated) }
             if !backgroundLive {
                 activeSamples = nil
                 if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }

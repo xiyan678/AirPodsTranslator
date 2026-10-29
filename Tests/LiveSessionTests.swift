@@ -464,13 +464,17 @@ final class LiveSessionTests: XCTestCase {
             feedSentence(controller)
             await eventually { recognized == index }
         }
-        XCTAssertTrue(controller.lines.isEmpty, "第一句仍等待翻译，后续识别也必须完成")
+        XCTAssertEqual(controller.lines.count, 5, "翻译未完成时也必须保留已识别的五句话")
+        XCTAssertTrue(controller.lines.allSatisfy { $0.translationPending == true })
+        let stableIDs = controller.lines.map(\.id)
         XCTAssertTrue(capture.isRecording)
         controller.end(save: true)
         XCTAssertFalse(controller.hasEnded, "结束必须等待已识别内容翻译完成再保存")
         gate.release()
         await eventually { controller.hasEnded && !store.conversations.isEmpty }
         XCTAssertEqual(controller.lines.map(\.original), (1...5).map { "Sentence \($0)" })
+        XCTAssertEqual(controller.lines.map(\.id), stableIDs, "译文返回应原位更新，不能删除再新建卡片")
+        XCTAssertFalse(controller.lines.contains { $0.translationPending == true })
         XCTAssertEqual(store.conversations.first?.lines.count, 5)
     }
 
@@ -500,7 +504,8 @@ final class LiveSessionTests: XCTestCase {
         // Old completion must not append to the paused session; end remaps both
         // retained utterances into a fresh session without recognizing audio twice.
         await Task.yield()
-        XCTAssertTrue(controller.lines.isEmpty)
+        XCTAssertEqual(controller.lines.count, 2)
+        XCTAssertTrue(controller.lines.allSatisfy { $0.translationPending == true })
         controller.end(save: true)
         await eventually { controller.hasEnded && !store.conversations.isEmpty }
         XCTAssertEqual(recognized, 2)
@@ -526,7 +531,7 @@ final class LiveSessionTests: XCTestCase {
         controller.pause()
         gate.release()
         await controller.start()
-        await eventually { controller.lines.count == 1 }
+        await eventually { controller.lines.count == 1 && controller.lines.first?.translationPending != true }
         XCTAssertEqual(controller.phase, .listening, "只有翻译恢复时，识别队列应回到倾听状态")
         XCTAssertTrue(capture.isRecording)
         controller.end(save: true)

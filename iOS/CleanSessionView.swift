@@ -35,11 +35,13 @@ struct CleanSessionView: View {
                                     ForEach(Array(controller.lines.enumerated()), id: \.element.id) { index, line in
                                         if mode == .listen {
                                             LiveTranscriptCard(original: line.original, translated: line.translated.isEmpty
-                                                ? line.translationIssue ?? "" : line.translated,
-                                                               index: index + 1, completed: true,
-                                                               size: preferences.fontSize)
+                                                ? line.translationIssue ?? (line.translationPending == true ? "正在翻译…" : "") : line.translated,
+                                                               index: index + 1, completed: line.translationPending != true,
+                                                               size: preferences.fontSize,
+                                                               pending: line.translationPending == true,
+                                                               issue: line.translated.isEmpty ? nil : line.translationIssue)
                                                 .contextMenu {
-                                                    if controller.lines.last?.id == line.id {
+                                                    if controller.lines.last?.id == line.id, line.translationPending != true {
                                                         Button("修改并重译") { editingLine = line }
                                                     }
                                                     ShareLink(item: line.original + "\n" + line.translated) { Text("分享") }
@@ -422,10 +424,12 @@ private struct LiveTranscriptCard: View {
     let index: Int
     let completed: Bool
     let size: Double
+    var pending = false
+    var issue: String? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label(completed ? "已完成" : "识别中", systemImage: completed ? "checkmark.circle.fill" : "waveform")
+                Label(pending ? "翻译中" : (completed ? "已完成" : "识别中"), systemImage: completed ? "checkmark.circle.fill" : "waveform")
                     .foregroundStyle(completed ? Color.green : .gray)
                 Spacer()
                 Text("#\(index)").foregroundStyle(.gray)
@@ -436,6 +440,7 @@ private struct LiveTranscriptCard: View {
                 Text(translated).font(.system(size: size, weight: .semibold))
                     .foregroundStyle(StudioStyle.blue)
             }
+            if let issue { Text(issue).font(.caption).foregroundStyle(.secondary) }
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(20)
         .background(.white, in: RoundedRectangle(cornerRadius: 24))
