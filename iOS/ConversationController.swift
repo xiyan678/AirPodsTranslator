@@ -1132,10 +1132,10 @@ final class ConversationController: ObservableObject {
         }
         do {
             status = "正在重新翻译上一句…"
-            let mode = preferences.processingMode
+            let processingMode = preferences.processingMode
             let result = try await AsyncDeadline<String>.run(timeout: .seconds(20)) { [services] in
                 try await services.translate(revision.text, from: revision.source,
-                                             to: revision.target, mode: mode, preparedSession: preparedSession)
+                                             to: revision.target, mode: processingMode, preparedSession: preparedSession)
             }
             guard revisionID == revision.revisionID, lines.last?.id == revision.lineID else { return }
             guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
