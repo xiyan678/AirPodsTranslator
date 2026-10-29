@@ -85,7 +85,8 @@ final class ConversationController: ObservableObject {
     private var waitingImage: (text: String, source: String, target: String, requestID: UUID)?
     private var waitingText: (text: String, source: String, target: String, requestID: UUID)?
     private var waitingRevision: PendingRevision?
-    private var textRequestID: UUID?
+    @Published private(set) var textRequestID: UUID?
+    var isTranslatingText: Bool { textRequestID != nil }
     private var textRequestIsDialogue = false
     private var textDialogueConversationID: UUID?
     private var forcedLanguage: String?
@@ -970,6 +971,7 @@ final class ConversationController: ObservableObject {
             source = selectedSource
         }
         guard AppLanguage.all.contains(where: { $0.code == source }) else {
+            textRequestID = nil
             errorMessage = "无法确定原文语言，请手动选择"
             return
         }
@@ -1013,6 +1015,7 @@ final class ConversationController: ObservableObject {
             textRequestTimeout?.cancel()
             textRequestTimeout = nil
             if waitingText?.requestID == requestID { waitingText = nil }
+            textRequestID = nil
             textTranslation = result
             if textRequestIsDialogue {
                 guard textDialogueConversationID == conversationID, !hasEnded else { return }
@@ -1064,6 +1067,7 @@ final class ConversationController: ObservableObject {
             textRequestTimeout?.cancel()
             textRequestTimeout = nil
             if waitingText?.requestID == requestID { waitingText = nil }
+            textRequestID = nil
             errorMessage = error.localizedDescription
         }
     }

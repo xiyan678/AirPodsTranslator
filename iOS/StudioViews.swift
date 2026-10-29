@@ -143,7 +143,7 @@ struct TextTranslationView: View {
     @State private var original = ""
     @State private var source = "auto"
     @State private var target = "zh"
-    @State private var translating = false
+    private var translating: Bool { controller.isTranslatingText }
 
     var body: some View {
         NavigationStack {
@@ -187,10 +187,8 @@ struct TextTranslationView: View {
                                 }
                             }
                         Button {
-                            translating = true
                             Task {
                                 await controller.translateText(original, from: source, to: target)
-                                translating = false
                             }
                         } label: {
                             Label(translating ? "正在翻译" : "翻译文字", systemImage: "sparkles")

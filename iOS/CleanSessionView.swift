@@ -10,7 +10,7 @@ struct CleanSessionView: View {
     @State private var editingLine: TranscriptLine?
     private var keyboardMode: Bool { mode == .dialogue && controller.dialogueKeyboardEnabled }
     private var draft: String { controller.dialogueKeyboardDraft }
-    @State private var sending = false
+    private var sending: Bool { controller.isTranslatingText }
     @FocusState private var inputFocused: Bool
 
     private var active: Bool { controller.mode == mode && controller.isRunning }
@@ -367,11 +367,9 @@ struct CleanSessionView: View {
         let submitted = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !submitted.isEmpty, !sending, !controller.isEnding,
               controller.languagePackRequest == nil else { return }
-        sending = true
         let requestID = UUID()
         Task {
             await controller.sendDialogueText(submitted, requestID: requestID)
-            sending = false
         }
     }
 

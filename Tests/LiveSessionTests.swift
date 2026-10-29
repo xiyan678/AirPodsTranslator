@@ -24,14 +24,17 @@ final class LiveSessionTests: XCTestCase {
         try FileManager.default.removeItem(at: directory)
     }
 
-    private func controller(translationGate: TranslationGate? = nil) -> ConversationController {
+    private func controller(translationGate: TranslationGate? = nil,
+                            gatedText: String? = nil) -> ConversationController {
         let capture = AudioCapture()
         let services = ConversationServices(
             prepareSpeech: {}, requestMicrophonePermission: { true },
             startCapture: { capture.startExternal() },
             recognition: { _, _ in (text: "Hello there", language: "en") },
-            translation: { _, _, _, _, _ in
-                if let translationGate { return await translationGate.wait() }
+            translation: { text, _, _, _, _ in
+                if let translationGate, gatedText == nil || text == gatedText {
+                    return await translationGate.wait()
+                }
                 return "你好"
             }
         )
@@ -58,6 +61,30 @@ final class LiveSessionTests: XCTestCase {
         await controller.translateText("Hello", from: "en", to: "zh")
         XCTAssertEqual(controller.textTranslation, "你好")
         XCTAssertNil(controller.languagePackRequest, "已安装语言对应直接翻译，不进入准备下载流程")
+        XCTAssertNil(controller.errorMessage)
+        controller.clearCurrent()
+    }
+
+    func testTimedOutTextCanBeResentBeforeOldTranslationReturns() async {
+        let gate = TranslationGate()
+        defer { gate.release() }
+        let controller = controller(translationGate: gate, gatedText: "first")
+        controller.selectMode(.dialogue)
+        let firstID = UUID()
+        let first = Task {
+            await controller.translateText("first", from: "en", to: "zh",
+                                           inDialogue: true, requestID: firstID)
+        }
+        await eventually { gate.waiting }
+        XCTAssertTrue(controller.isTranslatingText)
+        controller.expireTextRequest(firstID)
+        XCTAssertFalse(controller.isTranslatingText, "超时后发送按钮必须解除等待状态")
+        await controller.translateText("second", from: "en", to: "zh", inDialogue: true)
+        XCTAssertFalse(controller.isTranslatingText)
+        XCTAssertEqual(controller.lines.map(\.original), ["second"])
+        gate.release()
+        await first.value
+        XCTAssertEqual(controller.lines.map(\.original), ["second"], "旧结果晚到不能覆盖重试结果")
         XCTAssertNil(controller.errorMessage)
         controller.clearCurrent()
     }
