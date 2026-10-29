@@ -82,7 +82,7 @@ struct CleanSessionView: View {
                         if !active && !paused { liveControls }
                     } else {
                         if keyboardMode { keyboardControls }
-                        dialogueControls
+                        else { dialogueControls }
                     }
                 }
             }
@@ -102,10 +102,16 @@ struct CleanSessionView: View {
             .task(id: keyboardMode) {
                 if keyboardMode {
                     await Task.yield()
+                    guard !Task.isCancelled, keyboardMode else { return }
                     inputFocused = true
                 }
             }
             .onAppear {
+                if mode == .dialogue {
+                    controller.dialogueKeyboardEnabled = false
+                    inputFocused = false
+                    controller.isKeyboardInputFocused = false
+                }
                 if controller.mode != mode {
                     controller.selectMode(mode)
                 }
@@ -169,7 +175,7 @@ struct CleanSessionView: View {
                     controller.dialogueKeyboardEnabled.toggle()
                     if !keyboardMode { inputFocused = false }
                 } label: {
-                    Label(keyboardMode ? "收起键盘" : "键盘", systemImage: keyboardMode ? "keyboard.chevron.compact.down" : "keyboard")
+                    Label(keyboardMode ? "语音" : "键盘", systemImage: keyboardMode ? "mic.fill" : "keyboard")
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 15).frame(height: 42)
                         .background(.white, in: Capsule())

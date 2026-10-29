@@ -50,6 +50,10 @@ struct RootView: View {
                 Button {
                     if tab == .listen, !controller.selectMode(.listen) { return }
                     if tab == .dialogue, !controller.selectMode(.dialogue) { return }
+                    if tab == .dialogue {
+                        controller.dialogueKeyboardEnabled = false
+                        controller.isKeyboardInputFocused = false
+                    }
                     selectedTab = tab
                 } label: {
                     VStack(spacing: 4) {
