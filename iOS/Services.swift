@@ -302,7 +302,7 @@ final class AudioCapture: NSObject, ObservableObject {
     var onUtterance: (([Float]) -> Void)?
     var nearField = true
     var quality = false
-    /// 同声传译模式：短停顿即切句，单句上限 8 秒（高质量 12 秒）。对话模式保持整句。
+    /// 同传和对话均等待句末停顿；同传保留实时预览，并限制连续无停顿音频的窗口。
     var liveSegmentation = false
     private var engine: AVAudioEngine?
     private var samples: [Float] = []
@@ -323,8 +323,6 @@ final class AudioCapture: NSObject, ObservableObject {
     private static let preRollSamples = 8_000            // 开口前保留 0.5 秒
     private static let trailingSilenceKept = 4_800       // 句尾保留 0.3 秒，避免模型在长静音上编造内容
     private static let noiseMargin: Float = 12           // 高于底噪 12 dB 才算语音
-    private static let liveMinimumSegment = 48_000       // 同传：一句至少 3 秒才允许按短停顿切句
-    private static let liveShortPause = 6_400            // 同传：0.4 秒停顿即切句
     private static let liveCutSearchWindow = 24_000      // 同传：达到上限时在最近 1.5 秒内找切点
     /// 当前句每帧的结束位置和音量，用于在连续讲话中找安静处切句。
     private var frameLevels: [(end: Int, decibels: Float)] = []
@@ -465,13 +463,12 @@ final class AudioCapture: NSObject, ObservableObject {
         let hasEnoughSpeech = voicedSampleCount >= Self.minimumVoicedSamples
         let silenceLimit = Int(Double(Self.sampleRate) * (quality ? 1.5 : 1.2))
         let maximumSamples = liveSegmentation
-            ? Self.sampleRate * (quality ? 12 : 8)
+            ? Self.sampleRate * (quality ? 28 : 8)
             : Self.sampleRate * (quality ? 30 : 20)
         let partialInterval = Int(Double(Self.sampleRate) * (quality ? 1.8 : 1.2))
-        // 同传模式：已说满 3 秒后，0.4 秒的换气停顿就切句，不必等 1.2 秒长停顿。
-        let shortPauseCut = liveSegmentation && samples.count >= Self.liveMinimumSegment &&
-            silentSampleCount >= Self.liveShortPause
-        if silentSampleCount > silenceLimit || shortPauseCut {
+        // 换气不等于句末。预览可持续刷新，最终翻译和播报必须等完整停顿。
+        // 质量档允许在 Whisper 的 30 秒音频窗口内保留更长的演讲句子。
+        if silentSampleCount > silenceLimit {
             // 一句结束。累计语音不足 0.2 秒视为噪声（拍手、碰撞），直接丢弃，不送识别。
             let utterance = hasEnoughSpeech ? trimmedUtterance() : nil
             samples = []
@@ -529,12 +526,29 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     private var completions: [() -> Void] = []
     private(set) var isPlaying = false
     private var activeUtteranceID: ObjectIdentifier?
+    private var queuedUtteranceIDs = Set<ObjectIdentifier>()
     override init() { super.init(); synthesizer.delegate = self }
 
     /// 当前输出是否为耳机类设备（AirPods、蓝牙耳机、有线耳机）。
     static var headphonesConnected: Bool {
         let headphonePorts: Set<AVAudioSession.Port> = [.headphones, .bluetoothA2DP, .bluetoothLE, .bluetoothHFP]
         return AVAudioSession.sharedInstance().currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
+    }
+
+    /// 沿用正在收音的耳机会话，把译文加入系统朗读队列，保留原有句子的播放顺序。
+    @discardableResult
+    func enqueue(_ text: String, language: String, rate: Float) -> Bool {
+        guard let voice = AVSpeechSynthesisVoice(language: language) ??
+                AVSpeechSynthesisVoice.speechVoices().first(where: {
+                    $0.language.hasPrefix(language)
+                }) else { return false }
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = voice
+        utterance.rate = rate
+        queuedUtteranceIDs.insert(ObjectIdentifier(utterance))
+        isPlaying = true
+        synthesizer.speak(utterance)
+        return true
     }
 
     /// - Parameter keepInputActive: 为 true 时沿用录音中的 playAndRecord 会话，不切换音频类别，
@@ -545,6 +559,7 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
         // 替换播放时保留完成回调，等最后一条语音结束才恢复收音。
         isPlaying = true
         activeUtteranceID = nil
+        queuedUtteranceIDs.removeAll()
         completions.append(done)
         synthesizer.stopSpeaking(at: .immediate)
         guard let voice = AVSpeechSynthesisVoice(language: language) ??
@@ -594,23 +609,36 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
 
     private func finish() {
         activeUtteranceID = nil
+        queuedUtteranceIDs.removeAll()
         isPlaying = false
         let callbacks = completions
         completions = []
         for callback in callbacks { callback() }
     }
 
+    private func completed(_ id: ObjectIdentifier) {
+        if queuedUtteranceIDs.remove(id) != nil {
+            isPlaying = activeUtteranceID != nil || !queuedUtteranceIDs.isEmpty
+        } else if activeUtteranceID == id {
+            activeUtteranceID = nil
+            isPlaying = !queuedUtteranceIDs.isEmpty
+            let callbacks = completions
+            completions = []
+            for callback in callbacks { callback() }
+        }
+    }
+
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         let id = ObjectIdentifier(utterance)
         Task { @MainActor in
-            if activeUtteranceID == id { finish() }
+            completed(id)
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         let id = ObjectIdentifier(utterance)
         Task { @MainActor in
-            if activeUtteranceID == id { finish() }
+            completed(id)
         }
     }
 }

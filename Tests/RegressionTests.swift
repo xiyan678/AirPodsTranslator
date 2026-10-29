@@ -308,6 +308,43 @@ final class RegressionTests: XCTestCase {
         capture.stop()
     }
 
+    func testQualityModeKeepsALongSentenceTogetherPastTwelveSeconds() {
+        let capture = AudioCapture()
+        capture.liveSegmentation = true
+        capture.quality = true
+        var utterances: [[Float]] = []
+        capture.onUtterance = { utterances.append($0) }
+        capture.startExternal()
+        // 14 秒连续讲话含强弱音节，不应在旧的 12 秒上限处切掉后半句。
+        for _ in 0..<56 {
+            capture.feedExternal(Array(repeating: 0.2, count: 2_560))
+            capture.feedExternal(Array(repeating: 0.02, count: 1_440))
+        }
+        capture.feedExternal(Array(repeating: 0.2, count: 3_200))
+        XCTAssertTrue(utterances.isEmpty)
+        capture.feedExternal(Array(repeating: 0, count: 28_800))
+        XCTAssertEqual(utterances.count, 1)
+        XCTAssertEqual(utterances.first?.count, 16_000 * 14 + 3_200 + 4_800)
+        capture.stop()
+    }
+
+    func testPreviewWaitsForAgreementAndNeverTranslatesPartialEnglishWords() {
+        var stabilizer = LiveTranscriptStabilizer()
+        XCTAssertEqual(stabilizer.update("We need to increase", language: "en"), "")
+        XCTAssertEqual(stabilizer.update("We need to include everyone.", language: "en"), "We need to")
+        XCTAssertEqual(stabilizer.update("We need to include everyone today.", language: "en"),
+                       "We need to include everyone")
+        XCTAssertEqual(stabilizer.update("We need to include everyone today.", language: "en"),
+                       "We need to include everyone today.")
+        stabilizer.reset()
+        XCTAssertEqual(stabilizer.update("I can", language: "en"), "")
+        XCTAssertEqual(stabilizer.update("I can't attend.", language: "en"), "I")
+        XCTAssertEqual(stabilizer.update("完全不同的内容", language: "zh"), "")
+        XCTAssertEqual(stabilizer.update("完全不同的内容", language: "zh"), "完全不同的内容")
+        stabilizer.reset()
+        XCTAssertEqual(stabilizer.update("We need to include everyone today.", language: "en"), "")
+    }
+
     func testNewPreferencesPrioritizeQualityAndPreserveExplicitChoice() {
         let defaults = UserDefaults.standard
         let previous = defaults.object(forKey: "processingMode")

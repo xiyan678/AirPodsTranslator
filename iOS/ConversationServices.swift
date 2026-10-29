@@ -9,6 +9,8 @@ struct ConversationServices {
     var startCapture: () throws -> Void
     var recognition: ([Float], String?) async throws -> (text: String, language: String)
     var translation: (String, String, String, ProcessingMode, TranslationSession?) async throws -> String
+    var headphonesConnected: () -> Bool = { SpeechPlayer.headphonesConnected }
+    var enqueueSpeech: ((String, String, Float) -> Bool)? = nil
 
     func recognize(_ samples: [Float], language: String?) async throws -> (text: String, language: String) {
         try await recognition(samples, language)

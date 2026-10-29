@@ -1,4 +1,40 @@
 import Foundation
+import NaturalLanguage
+
+/// 相邻两次识别都一致的前缀才用于预览翻译，最终整句仍重新识别。
+struct LiveTranscriptStabilizer {
+    private var previous = ""
+    private var language = ""
+
+    mutating func update(_ text: String, language: String) -> String {
+        if self.language != language { previous = "" }
+        self.language = language
+        let old = Array(previous), current = Array(text)
+        previous = text
+        let shared = zip(old, current).prefix { $0.0 == $0.1 }.count
+        guard shared > 0 else { return "" }
+        var prefix = String(current.prefix(shared))
+        // increase / include 的共同前缀 inc 不是一个确认的单词；can / can't 也一样。
+        func wordCharacter(_ character: Character) -> Bool {
+            character.isLetter || character.isNumber || character == "'" || character == "’"
+        }
+        let continues = (old.count > shared && wordCharacter(old[shared])) ||
+            (current.count > shared && wordCharacter(current[shared]))
+        if continues, let last = prefix.last, wordCharacter(last) {
+            let tokenizer = NLTokenizer(unit: .word)
+            tokenizer.string = prefix
+            var lastWord: Range<String.Index>?
+            tokenizer.enumerateTokens(in: prefix.startIndex..<prefix.endIndex) { range, _ in
+                lastWord = range
+                return true
+            }
+            if let lastWord { prefix = String(prefix[..<lastWord.lowerBound]) }
+        }
+        return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    mutating func reset() { previous = ""; language = "" }
+}
 
 enum ConversationMode: String, CaseIterable, Identifiable, Codable {
     case listen = "耳机听译"

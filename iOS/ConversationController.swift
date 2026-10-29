@@ -39,6 +39,7 @@ final class ConversationController: ObservableObject {
     @Published private(set) var liveTranslation = ""
     private var previewRequestID: UUID?
     private var previewTask: Task<Void, Never>?
+    private var previewStabilizer = LiveTranscriptStabilizer()
     @Published private(set) var languagePackRequest: LanguagePackRequest?
     @Published private(set) var isEnding = false
     @Published private(set) var hasEnded = false
@@ -634,6 +635,7 @@ final class ConversationController: ObservableObject {
         previewRequestID = nil
         previewTask?.cancel()
         previewTask = nil
+        previewStabilizer.reset()
         liveText = ""
         liveTranslation = ""
     }
@@ -642,7 +644,7 @@ final class ConversationController: ObservableObject {
         previewTask?.cancel()
         let token = UUID()
         previewRequestID = token
-        let text = liveText
+        let text = previewStabilizer.update(liveText, language: source)
         let target = mode == .dialogue && source == preferences.preferredLanguage
             ? lastOtherLanguage : preferences.preferredLanguage
         guard !text.isEmpty, source != target,
@@ -656,7 +658,7 @@ final class ConversationController: ObservableObject {
                 let translated = try await self.services.translate(text, from: source, to: target,
                     mode: self.preferences.processingMode)
                 guard !Task.isCancelled, self.previewRequestID == token,
-                      self.sessionID == session, self.liveText == text else { return }
+                      self.sessionID == session else { return }
                 self.liveTranslation = translated
             } catch {
                 // 预览不触发下载、不播报、不保存；完整句子再按正常流程处理。
@@ -731,7 +733,16 @@ final class ConversationController: ObservableObject {
             // 同传时译文只进耳机，麦克风继续收音，播报期间对方说的话不会丢。
             // 外放或未连接耳机时译文会被麦克风录回去，仍按原逻辑先停止收音。
             let keepListening = mode == .listen && output == .earphones &&
-                capture.isRecording && SpeechPlayer.headphonesConnected
+                capture.isRecording && services.headphonesConnected()
+            if keepListening {
+                // 耳机同传：按顺序播报，识别队列继续处理下一句，不等待整段朗读结束。
+                let queued = services.enqueueSpeech?(translated, item.target, preferences.speechRate) ??
+                    player.enqueue(translated, language: item.target, rate: preferences.speechRate)
+                if !queued { errorMessage = "当前设备没有\(AppLanguage.name(item.target))语音，译文已显示" }
+                transition(to: .listening)
+                updateOutputRoute()
+                return
+            }
             if !keepListening {
                 if let tail = capture.takePendingSpeech() { pending.append(tail) }
                 capture.stop()

@@ -121,6 +121,56 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertFalse(controller.capture.isRecording)
     }
 
+    func testNextSentenceIsCapturedWhileThePreviousTranslationIsWaiting() async {
+        let gate = TranslationGate()
+        defer { gate.release() }
+        let controller = controller(translationGate: gate)
+        await controller.start()
+        feedSentence(controller)
+        await eventually { gate.waiting }
+        XCTAssertTrue(controller.capture.isRecording)
+        feedSentence(controller)
+        controller.end(save: true)
+        gate.release()
+        await eventually { controller.hasEnded && controller.store.conversations.count == 1 }
+        XCTAssertEqual(controller.lines.count, 2, "翻译上一句时收到的下一句不能丢失")
+        XCTAssertEqual(controller.store.conversations.first?.lines.count, 2)
+    }
+
+    func testContinuousInterpretationDoesNotWaitForPlaybackBeforeTranslatingNextSentence() async {
+        let capture = AudioCapture()
+        var spoken: [String] = []
+        var finishedRecognitions = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in
+                finishedRecognitions += 1
+                return (text: "Sentence \(finishedRecognitions)", language: "en")
+            },
+            translation: { text, _, _, _, _ in "译文 \(text)" },
+            headphonesConnected: { true },
+            enqueueSpeech: { text, _, _ in spoken.append(text); return true }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "演讲" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        let savedAutoRead = controller.preferences.autoReadAloud
+        defer { controller.preferences.autoReadAloud = savedAutoRead }
+        controller.preferences.autoReadAloud = true
+        await controller.start()
+        feedSentence(controller)
+        await eventually { spoken.count == 1 }
+        XCTAssertTrue(capture.isRecording)
+        feedSentence(controller)
+        // 没有任何播放完成回调；识别、翻译仍应继续，播放顺序与译文顺序一致。
+        await eventually { spoken.count == 2 }
+        XCTAssertEqual(spoken, controller.lines.map(\.translated))
+        XCTAssertTrue(capture.isRecording)
+        controller.end(save: true)
+        await eventually { controller.hasEnded && controller.store.conversations.count == 1 }
+        XCTAssertEqual(controller.store.conversations.first?.lines.count, 2)
+    }
+
     func testEndingDuringInstalledTextTranslationStillSavesTheFinalLine() async {
         let gate = TranslationGate()
         defer { gate.release() }
