@@ -760,8 +760,20 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
         let code = AppLanguage.normalizedCode(language)
         if let identifier, let selected = AVSpeechSynthesisVoice(identifier: identifier),
            AppLanguage.normalizedCode(selected.language) == code { return selected }
-        return AVSpeechSynthesisVoice(language: language) ??
-            AVSpeechSynthesisVoice.speechVoices().first { AppLanguage.normalizedCode($0.language) == code }
+        let systemVoice = AVSpeechSynthesisVoice(language: language)
+        let available = AVSpeechSynthesisVoice.speechVoices()
+            .filter { AppLanguage.normalizedCode($0.language) == code }
+        // Prefer the requested/system locale: a higher-quality voice from another
+        // Chinese region can have a different pronunciation, not just a new timbre.
+        let matchingLocale = available.filter { $0.language == systemVoice?.language }
+        let candidates = matchingLocale.isEmpty ? available : matchingLocale
+        return candidates.sorted {
+            if $0.identifier == $1.identifier { return false }
+            if $0.quality.rawValue != $1.quality.rawValue { return $0.quality.rawValue > $1.quality.rawValue }
+            if $0.identifier == systemVoice?.identifier { return true }
+            if $1.identifier == systemVoice?.identifier { return false }
+            return $0.identifier < $1.identifier
+        }.first ?? systemVoice
     }
 
     func stop() { synthesizer.stopSpeaking(at: .immediate); finish() }

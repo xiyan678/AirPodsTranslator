@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 struct VoiceSettingsView: View {
     @EnvironmentObject private var controller: ConversationController
@@ -7,6 +8,7 @@ struct VoiceSettingsView: View {
     @State private var language: String
     @State private var player = SpeechPlayer()
     @State private var showPreviewError = false
+    @State private var installedVoices = AVSpeechSynthesisVoice.speechVoices()
 
     init(preferences: Preferences) {
         self.preferences = preferences
@@ -14,9 +16,12 @@ struct VoiceSettingsView: View {
     }
 
     private var voices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices()
+        installedVoices
             .filter { AppLanguage.normalizedCode($0.language) == language }
-            .sorted { ($0.language, $0.name, $0.identifier) < ($1.language, $1.name, $1.identifier) }
+            .sorted {
+                if $0.quality.rawValue != $1.quality.rawValue { return $0.quality.rawValue > $1.quality.rawValue }
+                return ($0.language, $0.name, $0.identifier) < ($1.language, $1.name, $1.identifier)
+            }
     }
 
     private var canPreview: Bool {
@@ -31,13 +36,13 @@ struct VoiceSettingsView: View {
                     ForEach(AppLanguage.all) { Text($0.name).tag($0.code) }
                 }
             }
-            Section("朗读声音") {
+            Section {
                 Button {
                     player.stop()
                     preferences.setVoiceIdentifier(nil, for: language)
                 } label: {
                     HStack {
-                        Text("跟随系统").foregroundStyle(.primary)
+                        Text("自动选择高质量声音").foregroundStyle(.primary)
                         Spacer()
                         if preferences.voiceIdentifier(for: language) == nil {
                             Image(systemName: "checkmark").foregroundStyle(StudioStyle.blue)
@@ -56,6 +61,7 @@ struct VoiceSettingsView: View {
                                     Text(voice.name).foregroundStyle(.primary)
                                     Text(Locale(identifier: "zh_CN").localizedString(forIdentifier: voice.language) ?? voice.language)
                                         .font(.caption).foregroundStyle(.secondary)
+                                    Text(qualityName(voice.quality)).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 if preferences.voiceIdentifier(for: language) == voice.identifier {
@@ -75,6 +81,10 @@ struct VoiceSettingsView: View {
                     Text("手机上暂时没有这门语言的朗读声音。")
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("朗读声音")
+            } footer: {
+                Text("增强、优质声音需先在 iPhone 设置的“辅助功能”中下载对应朗读声音，下载后返回这里试听选择。")
             }
         }
         .navigationTitle("目标语言声音")
@@ -84,6 +94,10 @@ struct VoiceSettingsView: View {
                 .disabled(voices.isEmpty || !canPreview)
         }
         .onChange(of: language) { _, _ in player.stop() }
+        .onAppear { installedVoices = AVSpeechSynthesisVoice.speechVoices() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            installedVoices = AVSpeechSynthesisVoice.speechVoices()
+        }
         .onChange(of: canPreview) { _, _ in
             if !canPreview { player.stop() }
         }
@@ -97,6 +111,15 @@ struct VoiceSettingsView: View {
         guard canPreview else { return }
         showPreviewError = !player.speak(VoicePreviewText.text(for: language), language: language,
             rate: preferences.speechRate, destination: .earphones, voiceIdentifier: identifier) {}
+    }
+
+    private func qualityName(_ quality: AVSpeechSynthesisVoiceQuality) -> String {
+        switch quality {
+        case .premium: "优质"
+        case .enhanced: "增强"
+        case .default: "标准"
+        @unknown default: "系统声音"
+        }
     }
 }
 
