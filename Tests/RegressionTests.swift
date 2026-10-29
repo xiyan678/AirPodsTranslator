@@ -271,18 +271,56 @@ final class RegressionTests: XCTestCase {
         capture.stop()
     }
 
-    func testLiveInterpretationCutsAtShortPauseButDialogueWaitsForFullSentence() {
-        for live in [true, false] {
+    func testBreathingPauseDoesNotSplitTheSentenceBeforeItsFinalWords() {
+        for quality in [false, true] {
             let capture = AudioCapture()
-            capture.liveSegmentation = live
+            capture.liveSegmentation = true
+            capture.quality = quality
             var utterances: [[Float]] = []
             capture.onUtterance = { utterances.append($0) }
             capture.startExternal()
-            capture.feedExternal(Array(repeating: 0.2, count: 64_000))   // 连续讲 4 秒
-            capture.feedExternal(Array(repeating: 0, count: 8_000))      // 停顿 0.5 秒
-            XCTAssertEqual(utterances.count, live ? 1 : 0, "live=\(live)")
+            capture.feedExternal(Array(repeating: 0.2, count: 64_000))
+            capture.feedExternal(Array(repeating: 0, count: 8_000)) // 换气 0.5 秒
+            XCTAssertTrue(utterances.isEmpty, "换气不能提前提交半句话，quality=\(quality)")
+            capture.feedExternal(Array(repeating: 0.2, count: 16_000)) // 句尾限定或否定词
+            capture.feedExternal(Array(repeating: 0, count: 28_800))
+            XCTAssertEqual(utterances.count, 1, "整句只能提交一次，quality=\(quality)")
+            XCTAssertEqual(utterances.first?.count, 64_000 + 8_000 + 16_000 + 4_800)
+            XCTAssertNil(capture.takePendingSpeech())
             capture.stop()
         }
+    }
+
+    func testQualityModeWaitsForFullSentencePauseAndStillProvidesPreviews() {
+        let capture = AudioCapture()
+        capture.liveSegmentation = true
+        capture.quality = true
+        var finals = 0, previews = 0
+        capture.onUtterance = { _ in finals += 1 }
+        capture.onPartial = { _ in previews += 1 }
+        capture.startExternal()
+        capture.feedExternal(Array(repeating: 0.2, count: 64_000))
+        capture.feedExternal(Array(repeating: 0, count: 19_200)) // 1.2 秒尚未达到质量档句末
+        XCTAssertEqual(finals, 0)
+        XCTAssertGreaterThan(previews, 0, "等待整句时仍需提供实时预览")
+        capture.feedExternal(Array(repeating: 0, count: 6_400))
+        XCTAssertEqual(finals, 1)
+        capture.stop()
+    }
+
+    func testNewPreferencesPrioritizeQualityAndPreserveExplicitChoice() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "processingMode")
+        defer {
+            if let previous { defaults.set(previous, forKey: "processingMode") }
+            else { defaults.removeObject(forKey: "processingMode") }
+        }
+        defaults.removeObject(forKey: "processingMode")
+        XCTAssertEqual(Preferences().processingMode, .quality)
+        defaults.set(ProcessingMode.fast.rawValue, forKey: "processingMode")
+        XCTAssertEqual(Preferences().processingMode, .fast)
+        defaults.set(ProcessingMode.quality.rawValue, forKey: "processingMode")
+        XCTAssertEqual(Preferences().processingMode, .quality)
     }
 
     func testLiveInterpretationSplitsLongSpeechAtQuietPointWithoutLosingAudio() {
