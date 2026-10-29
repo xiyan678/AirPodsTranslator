@@ -397,6 +397,49 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertEqual(controller.store.conversations.first?.lines.count, 2)
     }
 
+    func testLiveSpeakerPlaybackCannotStopCaptureOrLoseFollowingSentences() async {
+        await verifyContinuousCaptureDuringPlayback(destination: .speaker, headphones: false)
+    }
+
+    func testLiveSystemOutputWithoutHeadphonesCannotLoseFollowingSentences() async {
+        await verifyContinuousCaptureDuringPlayback(destination: .earphones, headphones: false)
+    }
+
+    private func verifyContinuousCaptureDuringPlayback(destination: AudioDestination, headphones: Bool) async {
+        let capture = AudioCapture()
+        var recognized = 0
+        var queued: [String] = []
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in
+                recognized += 1
+                return ("Sentence \(recognized)", "en")
+            },
+            translation: { text, _, _, _, _ in "译文 \(text)" },
+            headphonesConnected: { headphones },
+            enqueueSpeech: { text, _, _ in queued.append(text); return true },
+            playbackIsActive: { true }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "连续同传" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        controller.destination = destination
+        controller.preferences.autoReadAloud = true
+        defer { controller.clearCurrent() }
+        await controller.start()
+        for index in 1...5 {
+            XCTAssertTrue(capture.isRecording, "第 \(index) 句输入前麦克风不能因播报关闭")
+            feedSentence(controller)
+            await eventually { queued.count >= index }
+            XCTAssertTrue(capture.isRecording, "第 \(index) 句播报期间必须继续收音")
+        }
+        XCTAssertEqual(recognized, 5)
+        XCTAssertEqual(queued, controller.lines.map(\.translated))
+        controller.end(save: true)
+        await eventually { controller.hasEnded && !store.conversations.isEmpty }
+        XCTAssertEqual(store.conversations.first?.lines.count, 5)
+    }
+
     func testUnresponsivePreviewCannotBlockNewerLiveTranslation() async {
         let capture = AudioCapture(), gate = TranslationGate()
         defer { gate.release() }
