@@ -5,3 +5,5 @@ node_modules/
 *.log
 *.p8
 data/
+
+.env.before-anna-*
