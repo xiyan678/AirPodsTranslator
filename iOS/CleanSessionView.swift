@@ -25,13 +25,9 @@ struct CleanSessionView: View {
                 VStack(spacing: 0) {
                     topBar
                     if controller.lines.isEmpty && controller.liveText.isEmpty {
-                        if keyboardMode {
-                            Spacer(minLength: 0)
-                        } else {
-                            Spacer(minLength: 25)
-                            emptyState
-                            Spacer(minLength: 25)
-                        }
+                        Spacer(minLength: keyboardMode ? 0 : 25)
+                        emptyState
+                        Spacer(minLength: keyboardMode ? 0 : 25)
                     } else {
                         ScrollViewReader { scroll in
                             ScrollView {

@@ -35,6 +35,11 @@ final class DialogueInputTests: XCTestCase {
         if keyboardIntroduction.exists && keyboardIntroduction.isHittable { keyboardIntroduction.tap() }
         XCTAssertFalse(chinese.exists, "文字输入模式只显示键盘输入控件")
         XCTAssertFalse(english.exists)
+        XCTAssertTrue(app.staticTexts["开始一段对话"].exists)
+        XCTAssertTrue(app.staticTexts["输入任一语言，自动识别并翻译成另一种语言。"].exists)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(input.frame.maxY, app.keyboards.firstMatch.frame.minY,
+                                 "输入框应完整显示在系统键盘上方")
         let keyboardShot = XCTAttachment(screenshot: app.screenshot())
         keyboardShot.name = "对话页-键盘文字翻译"
         keyboardShot.lifetime = .keepAlways
