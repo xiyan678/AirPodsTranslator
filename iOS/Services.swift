@@ -232,7 +232,7 @@ final class WhisperService: ObservableObject {
         guard let model else { throw TranslatorError.modelUnavailable }
         let prompt = model.tokenizer.map { Array($0.encode(text: context).suffix(200)) }
         let options = DecodingOptions(language: language, detectLanguage: language == nil,
-                                      skipSpecialTokens: true,
+                                      skipSpecialTokens: true, withoutTimestamps: true,
                                       promptTokens: context.isEmpty ? nil : prompt, suppressBlank: true)
         let results = try await model.transcribe(audioArray: samples, decodeOptions: options)
         // 逐段按置信度过滤，不再直接拼接模型整段文本：静音和环境声产生的
