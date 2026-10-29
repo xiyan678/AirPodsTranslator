@@ -11,7 +11,6 @@ struct CleanSessionView: View {
     private var keyboardMode: Bool { mode == .dialogue && controller.dialogueKeyboardEnabled }
     private var draft: String { controller.dialogueKeyboardDraft }
     @State private var sending = false
-    @State private var sentDraftID: UUID?
     @FocusState private var inputFocused: Bool
 
     private var active: Bool { controller.mode == mode && controller.isRunning }
@@ -92,12 +91,6 @@ struct CleanSessionView: View {
             .sheet(isPresented: $showSummary) { LiveSummaryView(summary: controller.summary) }
             .sheet(item: $editingLine) { line in ReviseLineView(line: line) }
             .onChange(of: inputFocused) { _, focused in controller.isKeyboardInputFocused = focused }
-            .onChange(of: controller.deliveredDialogueTextID) { _, _ in
-                if let sentDraftID, keyboardMode, controller.deliveredDialogueTextID == sentDraftID {
-                    controller.dialogueKeyboardDraft = ""
-                    self.sentDraftID = nil
-                }
-            }
             .onDisappear { controller.isKeyboardInputFocused = false }
             .task(id: keyboardMode) {
                 if keyboardMode {
@@ -380,7 +373,6 @@ struct CleanSessionView: View {
               controller.languagePackRequest == nil else { return }
         sending = true
         let requestID = UUID()
-        sentDraftID = requestID
         Task {
             await controller.sendDialogueText(submitted, requestID: requestID)
             sending = false

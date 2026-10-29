@@ -1016,6 +1016,9 @@ final class ConversationController: ObservableObject {
                                           isMine: source == preferences.preferredLanguage)
                 lines.append(line)
                 deliveredDialogueText = text
+                if dialogueKeyboardDraft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    dialogueKeyboardDraft = ""
+                }
                 deliveredDialogueTextID = requestID
                 watch.publish(running: isRunning, latest: result)
                 if !subscriptions.isPro { usage.recordDialogueLine() }

@@ -15,6 +15,32 @@ final class RegressionTests: XCTestCase {
         return url
     }
 
+    func testTextCompletionPreservesNewDraftAndClearsOnlySubmittedDraft() async {
+        let controller = ConversationController()
+        controller.selectMode(.dialogue)
+        let autoRead = controller.preferences.autoReadAloud
+        let language = controller.preferences.preferredLanguage
+        defer {
+            controller.preferences.autoReadAloud = autoRead
+            controller.preferences.preferredLanguage = language
+        }
+        controller.preferences.autoReadAloud = false
+        controller.preferences.preferredLanguage = "zh"
+        controller.dialogueKeyboardDraft = "new unsent text"
+        let firstID = UUID()
+        // Same-language pass-through exercises delivery without a downloaded model.
+        await controller.translateText("hello", from: "en", to: "en", inDialogue: true, requestID: firstID)
+        XCTAssertEqual(controller.deliveredDialogueTextID, firstID)
+        XCTAssertEqual(controller.dialogueKeyboardDraft, "new unsent text")
+        controller.dialogueKeyboardDraft = " hello "
+        let secondID = UUID()
+        await controller.translateText("hello", from: "en", to: "en", inDialogue: true, requestID: secondID)
+        XCTAssertEqual(controller.deliveredDialogueTextID, secondID)
+        XCTAssertEqual(controller.dialogueKeyboardDraft, "")
+        XCTAssertEqual(controller.lines.count, 2)
+        controller.clearCurrent()
+    }
+
     func testDialogueAndLiveSessionsStaySeparateAcrossTabChanges() {
         let controller = ConversationController()
         let liveID = controller.currentConversationID

@@ -43,6 +43,11 @@ jobs:
             -parallel-testing-enabled NO \
             -resultBundlePath build/Regression.xcresult \
             CODE_SIGNING_ALLOWED=NO test 2>&1 | tee build/xcodebuild.log
+      - name: Export page screenshots
+        if: always()
+        run: |
+          mkdir -p build/screenshots
+          xcrun xcresulttool export attachments --path build/Regression.xcresult --output-path build/screenshots
       - name: Preserve evidence even on failure
         if: always()
         uses: actions/upload-artifact@v4
@@ -51,6 +56,7 @@ jobs:
           path: |
             build/xcodebuild.log
             build/Regression.xcresult
+            build/screenshots
       - name: Archive Release for iPhone without signing
         shell: bash
         run: |
