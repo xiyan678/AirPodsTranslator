@@ -829,6 +829,17 @@ final class ConversationController: ObservableObject {
     func languagePackFailed(_ error: Error, for requestID: UUID) {
         guard languagePackRequest?.id == requestID else { return }
         let resumeUtterance = waitingUtterance != nil
+        let cancelled = error is CancellationError ||
+            (error as NSError).domain == NSCocoaErrorDomain &&
+            (error as NSError).code == CocoaError.Code.userCancelled.rawValue ||
+            (error as NSError).domain == NSURLErrorDomain &&
+            (error as NSError).code == NSURLErrorCancelled
+        textRequestTimeout?.cancel()
+        textRequestTimeout = nil
+        textRequestID = nil
+        imageRequestID = nil
+        imageIsProcessing = false
+        revisionID = nil
         languagePackRequest = nil
         waitingUtterance = nil
         waitingImage = nil
@@ -836,6 +847,14 @@ final class ConversationController: ObservableObject {
         waitingRevision = nil
         languagePackResumeID = nil
         restoringUtterance = nil
+        if cancelled {
+            // 取消下载是正常操作；暂停收音，避免下一句再次弹出同一个下载提示。
+            if resumeUtterance && !isEnding { pause() }
+            errorMessage = nil
+            status = "已取消语言包准备"
+            finishEndingIfReady()
+            return
+        }
         errorMessage = "翻译准备失败，请检查语言包后重试。输入文字已保留。"
         status = "语言包下载未完成"
         if resumeUtterance { resumeCapture() }

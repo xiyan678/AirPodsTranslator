@@ -79,6 +79,45 @@ final class RegressionTests: XCTestCase {
         XCTAssertNil(controller.languagePackRequest)
     }
 
+    func testCancellingLanguageDownloadKeepsDraftAndAllowsRetryWithoutAlert() async {
+        let controller = ConversationController()
+        controller.selectMode(.dialogue)
+        controller.preferences.preferredLanguage = "zh"
+        controller.lastOtherLanguage = "en"
+        controller.dialogueKeyboardDraft = "你好"
+        for cancellation: Error in [CocoaError(.userCancelled), CancellationError(),
+                                    URLError(.cancelled)] {
+            await controller.sendDialogueText("你好")
+            guard let request = controller.languagePackRequest else {
+                return XCTFail("Expected language preparation request")
+            }
+            controller.languagePackFailed(cancellation, for: request.id)
+            XCTAssertNil(controller.errorMessage)
+            XCTAssertNil(controller.languagePackRequest)
+            XCTAssertEqual(controller.dialogueKeyboardDraft, "你好")
+            XCTAssertTrue(controller.lines.isEmpty)
+            controller.expireTextRequest(request.id)
+            XCTAssertNil(controller.errorMessage, "旧超时不能把取消变成报错")
+        }
+        await controller.sendDialogueText("你好")
+        XCTAssertNotNil(controller.languagePackRequest, "取消后必须允许重新发送")
+        controller.clearCurrent()
+    }
+
+    func testRealLanguagePreparationFailureStillReportsError() async {
+        let controller = ConversationController()
+        controller.selectMode(.dialogue)
+        controller.preferences.preferredLanguage = "zh"
+        controller.lastOtherLanguage = "en"
+        await controller.sendDialogueText("你好")
+        guard let request = controller.languagePackRequest else {
+            return XCTFail("Expected language preparation request")
+        }
+        controller.languagePackFailed(URLError(.notConnectedToInternet), for: request.id)
+        XCTAssertNotNil(controller.errorMessage)
+        XCTAssertNil(controller.languagePackRequest)
+    }
+
     func testExplicitConversationIDsNeverMergeEvenWithIdenticalLines() async throws {
         let url = try directory()
         defer { try? FileManager.default.removeItem(at: url) }
