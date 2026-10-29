@@ -373,9 +373,10 @@ struct CleanSessionView: View {
         guard !submitted.isEmpty, !sending, !controller.isEnding,
               controller.languagePackRequest == nil else { return }
         sending = true
+        let requestID = UUID()
+        sentDraftID = requestID
         Task {
-            await controller.sendDialogueText(submitted)
-            sentDraftID = controller.textRequestID
+            await controller.sendDialogueText(submitted, requestID: requestID)
             sending = false
         }
     }

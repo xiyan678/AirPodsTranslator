@@ -898,13 +898,14 @@ final class ConversationController: ObservableObject {
         outputRouteName = names.isEmpty ? "未检测到播放设备" : names.joined(separator: "、")
     }
 
-    func sendDialogueText(_ text: String) async {
+    func sendDialogueText(_ text: String, requestID: UUID = UUID()) async {
         guard selectMode(.dialogue) else { return }
-        await translateText(text, from: "auto", to: preferences.preferredLanguage, inDialogue: true)
+        await translateText(text, from: "auto", to: preferences.preferredLanguage,
+                            inDialogue: true, requestID: requestID)
     }
 
     func translateText(_ text: String, from selectedSource: String, to target: String,
-                       inDialogue: Bool = false) async {
+                       inDialogue: Bool = false, requestID: UUID = UUID()) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { errorMessage = "请输入要翻译的文字"; return }
         guard languagePackRequest == nil else { errorMessage = "请先完成当前语言包下载"; return }
@@ -922,7 +923,6 @@ final class ConversationController: ObservableObject {
                 hasEnded = false
             }
         }
-        let requestID = UUID()
         textRequestID = requestID
         textRequestIsDialogue = inDialogue
         textDialogueConversationID = inDialogue ? conversationID : nil

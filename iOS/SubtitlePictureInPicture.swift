@@ -113,7 +113,7 @@ final class SubtitlePictureInPicture: NSObject, ObservableObject {
 
     /// 字幕放不下时保留最新的内容。原来按尾部截断，长句只显示开头，
     /// 正在说的部分反而被省略号盖掉。
-    private static func latestPart(of text: String, fitting size: CGSize,
+    private nonisolated static func latestPart(of text: String, fitting size: CGSize,
                                    attributes: [NSAttributedString.Key: Any]) -> String {
         // 截断模式下测出来只有一行高，测量时改用自动换行。
         var measuring = attributes
