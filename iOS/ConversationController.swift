@@ -89,6 +89,10 @@ final class ConversationController: ObservableObject {
     private var latestPartial: (samples: [Float], window: UUID)?
     private var recognitionWindow: UUID?
     private var draining = false
+    private var liveTranslations: [PendingUtterance] = []
+    private var activeLiveTranslation: PendingUtterance?
+    private var liveTranslationTask: Task<Void, Never>?
+    private var liveTranslationWorkerID: UUID?
     private var sessionID: UUID?
     private var imageRequestID: UUID?
     private var revisionID: UUID?
@@ -335,6 +339,13 @@ final class ConversationController: ObservableObject {
 
     func pause() {
         guard !isEnding else { return }
+        if let item = activeLiveTranslation { pausedUtterances.append(item) }
+        pausedUtterances.append(contentsOf: liveTranslations)
+        liveTranslations = []
+        activeLiveTranslation = nil
+        liveTranslationWorkerID = nil
+        liveTranslationTask?.cancel()
+        liveTranslationTask = nil
         services.resetRecognition()
         recognitionWindow = nil
         if let item = waitingUtterance ?? restoringUtterance {
@@ -418,6 +429,7 @@ final class ConversationController: ObservableObject {
 
     private func finishEndingIfReady() {
         guard isEnding, !draining, pending.isEmpty, pausedUtterances.isEmpty,
+              liveTranslations.isEmpty, activeLiveTranslation == nil, liveTranslationWorkerID == nil,
               waitingUtterance == nil, waitingText == nil, languagePackResumeID == nil else { return }
         let shouldSave = saveWhenEnded
         isEnding = false
@@ -625,7 +637,8 @@ final class ConversationController: ObservableObject {
                     target: item.target, mine: item.mine, sessionID: session)
                 restoringUtterance = restored
                 transition(to: .recognizing)
-                await translateAndPlay(restored)
+                if mode == .listen { enqueueLiveTranslation(restored) }
+                else { await translateAndPlay(restored) }
                 if restoringUtterance?.sessionID == session { restoringUtterance = nil }
             } else if !pending.isEmpty {
                 let samples = pending.removeFirst()
@@ -687,6 +700,17 @@ final class ConversationController: ObservableObject {
     }
 
     private func updateLiveTranslation(source: String, session: UUID) {
+        // Stable sentences have priority over speculative preview work. Recognition
+        // and source subtitles remain live while the final translation queue drains.
+        guard liveTranslationWorkerID == nil else {
+            previewRequestID = nil
+            previewTask?.cancel()
+            previewTask = nil
+            latestPreview = nil
+            completedPreview = nil
+            liveTranslation = ""
+            return
+        }
         let text = previewStabilizer.update(liveText, language: source)
         let target = mode == .dialogue && source == preferences.preferredLanguage
             ? lastOtherLanguage : preferences.preferredLanguage
@@ -757,7 +781,10 @@ final class ConversationController: ObservableObject {
             }
             let source = selectedLanguage ?? AppLanguage.normalizedCode(recognized.language)
             if let item = makeUtterance(recognizedText, source: source, session: activeSession) {
-                await translateAndPlay(item)
+                if mode == .listen {
+                    enqueueLiveTranslation(item)
+                    transition(to: .listening)
+                } else { await translateAndPlay(item) }
             } else { transition(to: .listening) }
         } catch {
             guard sessionID == activeSession else { return }
@@ -805,26 +832,56 @@ final class ConversationController: ObservableObject {
         throw URLError(.unknown)
     }
 
-    private func translateAndPlay(_ item: PendingUtterance, allowDownload: Bool = true,
+    private func enqueueLiveTranslation(_ item: PendingUtterance) {
+        liveTranslations.append(item)
+        guard liveTranslationWorkerID == nil else { return }
+        let workerID = UUID()
+        liveTranslationWorkerID = workerID
+        liveTranslationTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.liveTranslationWorkerID == workerID {
+                    self.activeLiveTranslation = nil
+                    self.liveTranslationWorkerID = nil
+                    self.liveTranslationTask = nil
+                    self.finishEndingIfReady()
+                }
+            }
+            while self.liveTranslationWorkerID == workerID, !Task.isCancelled,
+                  self.sessionID == item.sessionID, !self.liveTranslations.isEmpty {
+                let next = self.liveTranslations.removeFirst()
+                self.activeLiveTranslation = next
+                // A missing pack preserves the original as a retryable line rather
+                // than stopping capture and blocking every subsequent utterance.
+                await self.translateAndPlay(next, allowDownload: false, backgroundLive: true)
+                guard self.liveTranslationWorkerID == workerID else { return }
+                self.activeLiveTranslation = nil
+            }
+        }
+    }
+
+    private func translateAndPlay(_ item: PendingUtterance, allowDownload: Bool = true, backgroundLive: Bool = false,
                                   preparedSession: TranslationSession? = nil) async {
         guard sessionID == item.sessionID else { return }
         do {
-            transition(to: .translating)
+            if !backgroundLive { transition(to: .translating) }
             status = "正在翻译 \(AppLanguage.name(item.source))…"
             // 正式译文优先于预览，避免旧预览和整句翻译争抢同一语言模型。
-            clearLivePreview()
+            if !backgroundLive { clearLivePreview() }
             let translated = try await translateLive(item, preparedSession: preparedSession)
             guard sessionID == item.sessionID else { return }
             let line = TranscriptLine(sourceLanguage: item.source, targetLanguage: item.target,
                                       original: item.text, translated: translated, isMine: item.mine)
             lines.append(line)
-            activeSamples = nil
-            if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }
+            if !backgroundLive {
+                activeSamples = nil
+                if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }
+            }
             watch.publish(running: isRunning, latest: translated)
             status = "检测到\(AppLanguage.name(item.source))"
             if !preferences.autoReadAloud || isEnding {
                 if !isEnding { guard checkDialogueQuota() else { return } }
-                resumeCapture()
+                if !backgroundLive { resumeCapture() }
                 return
             }
             let output: AudioDestination = item.mine ? .speaker : destination
@@ -838,7 +895,7 @@ final class ConversationController: ObservableObject {
                     player.enqueue(translated, language: item.target, rate: preferences.speechRate,
                                    voiceIdentifier: preferences.voiceIdentifier(for: item.target), destination: output)
                 if !queued { errorMessage = "当前设备没有\(AppLanguage.name(item.target))语音，译文已显示" }
-                transition(to: .listening)
+                if !backgroundLive { transition(to: .listening) }
                 updateOutputRoute()
                 return
             }
@@ -883,10 +940,12 @@ final class ConversationController: ObservableObject {
                 original: item.text, translated: "", isMine: item.mine)
             untranslated.translationIssue = "翻译未完成，原文已保留"
             lines.append(untranslated)
-            activeSamples = nil
-            if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }
+            if !backgroundLive {
+                activeSamples = nil
+                if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }
+            }
             status = "翻译未完成，原文已保留"
-            resumeCapture()
+            if !backgroundLive { resumeCapture() }
         }
     }
 

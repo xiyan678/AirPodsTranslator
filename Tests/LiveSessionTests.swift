@@ -440,6 +440,74 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertEqual(store.conversations.first?.lines.count, 5)
     }
 
+    func testSlowFinalTranslationDoesNotBlockRecognitionAndEndWaitsForAllLines() async {
+        let capture = AudioCapture(), gate = TranslationGate()
+        defer { gate.release() }
+        var recognized = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in recognized += 1; return ("Sentence \(recognized)", "en") },
+            translation: { text, _, _, _, _ in
+                if text == "Sentence 1" { return await gate.wait() }
+                return "译文 \(text)"
+            },
+            partialRecognition: { _, _ in SpeechRecognitionUpdate(text: "", language: "en") }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "会议" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        await controller.start()
+        defer { controller.clearCurrent() }
+        feedSentence(controller)
+        await eventually { gate.waiting }
+        for index in 2...5 {
+            feedSentence(controller)
+            await eventually { recognized == index }
+        }
+        XCTAssertTrue(controller.lines.isEmpty, "第一句仍等待翻译，后续识别也必须完成")
+        XCTAssertTrue(capture.isRecording)
+        controller.end(save: true)
+        XCTAssertFalse(controller.hasEnded, "结束必须等待已识别内容翻译完成再保存")
+        gate.release()
+        await eventually { controller.hasEnded && !store.conversations.isEmpty }
+        XCTAssertEqual(controller.lines.map(\.original), (1...5).map { "Sentence \($0)" })
+        XCTAssertEqual(store.conversations.first?.lines.count, 5)
+    }
+
+    func testPauseAndEndPreserveInFlightAndQueuedTranslationsWithoutLateDuplicates() async {
+        let capture = AudioCapture(), gate = TranslationGate()
+        defer { gate.release() }
+        var recognized = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in recognized += 1; return ("Sentence \(recognized)", "en") },
+            translation: { text, _, _, _, _ in
+                if text == "Sentence 1" { return await gate.wait() }
+                return "译文 \(text)"
+            },
+            partialRecognition: { _, _ in SpeechRecognitionUpdate(text: "", language: "en") }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "会议" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        await controller.start()
+        feedSentence(controller)
+        await eventually { gate.waiting }
+        feedSentence(controller)
+        await eventually { recognized == 2 }
+        controller.pause()
+        gate.release()
+        // Old completion must not append to the paused session; end remaps both
+        // retained utterances into a fresh session without recognizing audio twice.
+        await Task.yield()
+        XCTAssertTrue(controller.lines.isEmpty)
+        controller.end(save: true)
+        await eventually { controller.hasEnded && !store.conversations.isEmpty }
+        XCTAssertEqual(recognized, 2)
+        XCTAssertEqual(controller.lines.map(\.original), ["Sentence 1", "Sentence 2"])
+        XCTAssertEqual(store.conversations.first?.lines.count, 2)
+    }
+
     func testUnresponsivePreviewCannotBlockNewerLiveTranslation() async {
         let capture = AudioCapture(), gate = TranslationGate()
         defer { gate.release() }
