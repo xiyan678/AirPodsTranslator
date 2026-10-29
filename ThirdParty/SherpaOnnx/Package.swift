@@ -15,8 +15,7 @@ let package = Package(
         ),
         .binaryTarget(
             name: "onnxruntime",
-            url: "https://github.com/willwade/sherpa-onnx-spm/releases/download/1.13.8/onnxruntime.xcframework.zip",
-            checksum: "5a18cf7abd25800d77e7365f7f05dc8322d2deed8bde8daa57ba2c282fec4ea5"
+            path: "Artifacts/onnxruntime.xcframework"
         ),
         .target(
             name: "SherpaOnnx",

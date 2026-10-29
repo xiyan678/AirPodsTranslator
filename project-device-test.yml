@@ -1,5 +1,6 @@
 name: AirPodsTranslatorDeviceTest
 options:
+  preGenCommand: python3 scripts/prepare_sherpa.py
   bundleIdPrefix: app.eggplant1907
   deploymentTarget:
     iOS: '26.0'

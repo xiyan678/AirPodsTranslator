@@ -8,3 +8,5 @@ DerivedData/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
+
+ThirdParty/SherpaOnnx/Artifacts/
