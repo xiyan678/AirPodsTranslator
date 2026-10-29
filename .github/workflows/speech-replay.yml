@@ -1,0 +1,45 @@
+name: Local speech replay
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  speech:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate English speech fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p Tests/Fixtures build
+          cat > Tests/Fixtures/lecture.txt <<'TEXT'
+          Today I want to explain why accurate translation depends on complete sentences. We should not release the new version on Friday because the security review is not finished. Sarah will complete the review on Thursday, and David will prepare the customer announcement. If the final checks fail, we will postpone the release instead of removing the safety checks. The budget is fifteen thousand dollars, not fifty thousand dollars.
+          TEXT
+          /usr/bin/say -r 175 -f Tests/Fixtures/lecture.txt -o build/lecture.aiff
+          /usr/bin/afconvert -f WAVE -d LEI16@16000 -c 1 build/lecture.aiff Tests/Fixtures/lecture.wav
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen generate --spec project-regression.yml
+      - name: Replay actual audio through local recognition
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for runtime,group in d["devices"].items() if "iOS" in runtime for x in group if x["name"].startswith("iPhone")))')
+          xcodebuild -project AirPodsTranslatorRegression.xcodeproj \
+            -scheme AirPodsTranslatorRegression \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -parallel-testing-enabled NO \
+            -only-testing:AirPodsTranslatorTests/RecordedSpeechTests \
+            -resultBundlePath build/SpeechReplay.xcresult \
+            CODE_SIGNING_ALLOWED=NO test 2>&1 | tee build/speech-replay.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: speech-replay
+          path: |
+            build/speech-replay.log
+            build/SpeechReplay.xcresult
+            Tests/Fixtures/lecture.*
