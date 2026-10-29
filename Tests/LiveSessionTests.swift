@@ -65,6 +65,57 @@ final class LiveSessionTests: XCTestCase {
         controller.clearCurrent()
     }
 
+    func testTransientLiveTranslationFailureIsRetriedWithoutLosingSentence() async {
+        let capture = AudioCapture()
+        var attempts = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in (text: "Do not release on Friday", language: "en") },
+            translation: { _, _, _, _, _ in
+                attempts += 1
+                if attempts == 1 { throw URLError(.networkConnectionLost) }
+                return "不要在周五发布"
+            }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "会议" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        await controller.start()
+        feedSentence(controller)
+        controller.end(save: true)
+        await eventually { controller.hasEnded && !store.conversations.isEmpty }
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(controller.lines.map(\.original), ["Do not release on Friday"])
+        XCTAssertEqual(store.conversations.first?.lines.map(\.translated), ["不要在周五发布"])
+    }
+
+    func testPermanentLiveTranslationFailureStillSavesOriginalAndContinues() async {
+        let capture = AudioCapture()
+        var count = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in
+                count += 1
+                return (text: "Sentence \(count)", language: "en")
+            },
+            translation: { text, _, _, _, _ in
+                if text == "Sentence 1" { throw URLError(.networkConnectionLost) }
+                return "第二句译文"
+            }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "会议" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        await controller.start()
+        feedSentence(controller)
+        feedSentence(controller)
+        controller.end(save: true)
+        await eventually { controller.hasEnded && !store.conversations.isEmpty }
+        XCTAssertEqual(controller.lines.map(\.original), ["Sentence 1", "Sentence 2"])
+        XCTAssertEqual(controller.lines.last?.translated, "第二句译文")
+        XCTAssertEqual(store.conversations.first?.lines.map(\.original), ["Sentence 1", "Sentence 2"])
+    }
+
     func testTimedOutTextCanBeResentBeforeOldTranslationReturns() async {
         let gate = TranslationGate()
         defer { gate.release() }
