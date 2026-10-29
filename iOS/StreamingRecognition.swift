@@ -294,10 +294,14 @@ final class AppleSpeechSession: IncrementalSpeechSession {
     private var resultError: Error?
     private var cancelled = false
 
-    static func installedTranscriber(language: String) async -> SpeechTranscriber? {
+    static func supportedTranscriber(language: String) async -> SpeechTranscriber? {
         guard SpeechTranscriber.isAvailable,
               let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: language)) else { return nil }
-        let transcriber = SpeechTranscriber(locale: locale, preset: .timeIndexedProgressiveTranscription)
+        return SpeechTranscriber(locale: locale, preset: .timeIndexedProgressiveTranscription)
+    }
+
+    static func installedTranscriber(language: String) async -> SpeechTranscriber? {
+        guard let transcriber = await supportedTranscriber(language: language) else { return nil }
         return await AssetInventory.status(forModules: [transcriber]) == .installed ? transcriber : nil
     }
 

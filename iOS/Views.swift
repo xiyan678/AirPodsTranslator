@@ -502,7 +502,7 @@ struct LanguagePacksView: View {
                 Text("听对方").tag(false)
                 Text("我回复").tag(true)
             }.pickerStyle(.segmented)
-            Button("下载并准备离线翻译") {
+            Button("下载并准备离线语言") {
                 guard selected != preferences.preferredLanguage else {
                     message = "请选择另一种语言"
                     return
@@ -517,7 +517,7 @@ struct LanguagePacksView: View {
             if config != nil {
                 HStack {
                     ProgressView()
-                    Text("正在准备语言包；下载进度由系统显示")
+                    Text("正在准备翻译和语音资源…")
                 }
             }
             Text(message)
@@ -528,11 +528,20 @@ struct LanguagePacksView: View {
         .translationTask(config) { session in
             guard let requestedPair else { return }
             do {
-                _ = try await OfflineLanguageResources.live.prepare(
+                let unavailable = try await OfflineLanguageResources.live.prepare(
                     source: requestedPair.source, target: requestedPair.target
                 ) { try await prepareLanguagePack(session) }
-                message = "\(AppLanguage.name(requestedPair.source)) → \(AppLanguage.name(requestedPair.target)) 已就绪"
-            } catch { message = error.localizedDescription }
+                if unavailable.isEmpty {
+                    message = "离线翻译和语音识别已就绪"
+                } else {
+                    let names = unavailable.map { AppLanguage.name($0) }.joined(separator: "、")
+                    message = "离线翻译已就绪；此设备暂不支持\(names)的系统语音识别"
+                }
+            } catch {
+                if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    message = "已取消准备语言包"
+                } else { message = error.localizedDescription }
+            }
             config = nil
             self.requestedPair = nil
         }
