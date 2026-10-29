@@ -208,11 +208,24 @@ final class WhisperService: ObservableObject {
         }
     }
 
-    func recognize(_ samples: [Float], language: String? = nil) async throws -> (text: String, language: String) {
+    func detectLanguage(_ samples: [Float]) async throws -> String? {
         try await prepare()
         guard let model else { throw TranslatorError.modelUnavailable }
+        // 此版本 SDK 的音频数组接口名为 detectLangauge。
+        let detected = try await model.detectLangauge(audioArray: samples)
+        // SDK 返回的是对数概率，不是 0...1 的概率值。
+        guard WhisperLanguageConfidence.accepts(detected.langProbs[detected.language]) else { return nil }
+        return detected.language
+    }
+
+    func recognize(_ samples: [Float], language: String? = nil,
+                   context: String = "") async throws -> (text: String, language: String) {
+        try await prepare()
+        guard let model else { throw TranslatorError.modelUnavailable }
+        let prompt = model.tokenizer.map { Array($0.encode(text: context).suffix(200)) }
         let options = DecodingOptions(language: language, detectLanguage: language == nil,
-                                      skipSpecialTokens: true, suppressBlank: true)
+                                      skipSpecialTokens: true,
+                                      promptTokens: context.isEmpty ? nil : prompt, suppressBlank: true)
         let results = try await model.transcribe(audioArray: samples, decodeOptions: options)
         // 逐段按置信度过滤，不再直接拼接模型整段文本：静音和环境声产生的
         // “掌声”“空白音频”等低置信度或重复段落不会进入翻译和播报。
@@ -297,6 +310,7 @@ final class LocalTranslator {
 final class AudioCapture: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     private(set) var recordingID: UUID?
+    private(set) var windowID = UUID()
     @Published private(set) var level: Float = 0
     var onPartial: (([Float]) -> Void)?
     var onUtterance: (([Float]) -> Void)?
@@ -325,7 +339,7 @@ final class AudioCapture: NSObject, ObservableObject {
     private static let noiseMargin: Float = 12           // 高于底噪 12 dB 才算语音
     private static let liveCutSearchWindow = 24_000      // 同传：达到上限时在最近 1.5 秒内找切点
     /// 当前句每帧的结束位置和音量，用于在连续讲话中找安静处切句。
-    private var frameLevels: [(end: Int, decibels: Float)] = []
+    private var frameLevels: [(end: Int, decibels: Float, voiced: Bool)] = []
 
     func startExternal() {
         guard !isRecording else { return }
@@ -337,6 +351,7 @@ final class AudioCapture: NSObject, ObservableObject {
     }
 
     private func resetUtterance() {
+        windowID = UUID()
         beganSpeaking = false
         voicedSampleCount = 0
         silentSampleCount = 0
@@ -348,6 +363,14 @@ final class AudioCapture: NSObject, ObservableObject {
     func feedExternal(_ chunk: [Float]) {
         guard let recordingID else { return }
         receive(chunk, recordingID: recordingID)
+    }
+
+    /// 时间戳来自当前窗口的识别结果；晚到的旧结果不能裁掉下一句话。
+    @discardableResult
+    func commitPrefix(_ count: Int, window: UUID) -> Bool {
+        guard isRecording, windowID == window, count > 0, count <= samples.count else { return false }
+        retainSamples(after: count)
+        return true
     }
 
     /// 录音线程已经排队的旧回调，不能在停止后重新启动时进入新录音。
@@ -428,6 +451,8 @@ final class AudioCapture: NSObject, ObservableObject {
 
     private func append(_ chunk: [Float]) {
         guard isRecording, !chunk.isEmpty else { return }
+        // 坏音频帧不能把底噪和能量计算污染成 NaN，后续正常语音仍需可识别。
+        guard chunk.allSatisfy(\.isFinite) else { return }
         let energy = sqrt(chunk.reduce(Float(0)) { $0 + $1 * $1 } / Float(chunk.count))
         level = max(0, min(1, (Self.decibels(energy) + 55) / 55))
         // 按 20 ms 帧判断，避免一个大块里的短促响声被整体算作语音。
@@ -459,7 +484,7 @@ final class AudioCapture: NSObject, ObservableObject {
             return
         }
         samplesSincePartial += frame.count
-        frameLevels.append((end: samples.count, decibels: db))
+        frameLevels.append((end: samples.count, decibels: db, voiced: voiced))
         let hasEnoughSpeech = voicedSampleCount >= Self.minimumVoicedSamples
         let silenceLimit = Int(Double(Self.sampleRate) * (quality ? 1.5 : 1.2))
         let maximumSamples = liveSegmentation
@@ -498,21 +523,50 @@ final class AudioCapture: NSObject, ObservableObject {
     private func quietestRecentCut() -> Int? {
         let earliest = samples.count - Self.liveCutSearchWindow
         let candidates = frameLevels.filter { $0.end >= max(earliest, Self.minimumVoicedSamples) && $0.end < samples.count }
-        return candidates.min { $0.decibels < $1.decibels }?.end
+        // 使用持续低音量区间的中心，而不是单个最低帧，减少在音节内部切开的机会。
+        guard let lowest = candidates.map(\.decibels).min() else { return nil }
+        var runs: [[Int]] = []
+        var run: [Int] = []
+        for frame in candidates {
+            if frame.decibels <= lowest + 3 { run.append(frame.end) }
+            else if !run.isEmpty { runs.append(run); run = [] }
+        }
+        if !run.isEmpty { runs.append(run) }
+        guard let longest = runs.max(by: { $0.count < $1.count }) else { return nil }
+        return longest[longest.count / 2]
     }
 
     /// 发出切点之前的部分，切点之后的音频留作下一句的开头。
     private func splitUtterance(at cut: Int) {
         let utterance = Array(samples[..<cut])
-        let rest = Array(samples[cut...])
-        let restLevels = frameLevels.filter { $0.end > cut }.map { (end: $0.end - cut, decibels: $0.decibels) }
-        samples = rest
-        resetUtterance()
-        beganSpeaking = true
-        voicedSampleCount = rest.count
-        lastVoicedEnd = rest.count
-        frameLevels = restLevels
+        retainSamples(after: cut)
         onUtterance?(utterance)
+    }
+
+    private func retainSamples(after cut: Int) {
+        let originalLevels = frameLevels
+        var start = 0
+        var remaining: [(end: Int, decibels: Float, voiced: Bool)] = []
+        var voicedCount = 0
+        var lastVoice = 0
+        for frame in originalLevels {
+            let frameStart = start
+            start = frame.end
+            guard frame.end > cut else { continue }
+            let end = frame.end - cut
+            remaining.append((end, frame.decibels, frame.voiced))
+            if frame.voiced {
+                voicedCount += frame.end - max(cut, frameStart)
+                lastVoice = end
+            }
+        }
+        samples = Array(samples[cut...])
+        resetUtterance()
+        beganSpeaking = voicedCount > 0
+        voicedSampleCount = voicedCount
+        lastVoicedEnd = lastVoice
+        silentSampleCount = beganSpeaking ? samples.count - lastVoice : 0
+        frameLevels = remaining
     }
 
     private static func decibels(_ rms: Float) -> Float {
@@ -527,6 +581,12 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     @Published private(set) var isPlaying = false
     private var activeUtteranceID: ObjectIdentifier?
     private var queuedUtteranceIDs = Set<ObjectIdentifier>()
+    private struct QueuedSpeech {
+        let text: String
+        let voice: AVSpeechSynthesisVoice
+        let rate: Float
+    }
+    private var waitingSpeech: [QueuedSpeech] = []
     override init() { super.init(); synthesizer.delegate = self }
 
     /// 当前输出是否为耳机类设备（AirPods、蓝牙耳机、有线耳机）。
@@ -539,13 +599,24 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     @discardableResult
     func enqueue(_ text: String, language: String, rate: Float, voiceIdentifier: String? = nil) -> Bool {
         guard let voice = Self.voice(for: language, identifier: voiceIdentifier) else { return false }
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = voice
-        utterance.rate = rate
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        waitingSpeech.append(QueuedSpeech(text: text, voice: voice, rate: rate))
+        isPlaying = true
+        playNextQueuedSpeech()
+        return true
+    }
+
+    private func playNextQueuedSpeech() {
+        guard queuedUtteranceIDs.isEmpty, activeUtteranceID == nil, !waitingSpeech.isEmpty else { return }
+        let backlog = waitingSpeech.count > 1
+            ? waitingSpeech.reduce(0.0) { $0 + SpeechBacklog.estimatedSeconds($1.text, rate: $1.rate) } : 0
+        let next = waitingSpeech.removeFirst()
+        let utterance = AVSpeechUtterance(string: next.text)
+        utterance.voice = next.voice
+        utterance.rate = SpeechBacklog.adjustedRate(next.rate, backlog: backlog)
         queuedUtteranceIDs.insert(ObjectIdentifier(utterance))
         isPlaying = true
         synthesizer.speak(utterance)
-        return true
     }
 
     /// - Parameter keepInputActive: 为 true 时沿用录音中的 playAndRecord 会话，不切换音频类别，
@@ -558,6 +629,7 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
         isPlaying = true
         activeUtteranceID = nil
         queuedUtteranceIDs.removeAll()
+        waitingSpeech.removeAll()
         completions.append(done)
         synthesizer.stopSpeaking(at: .immediate)
         guard let voice = Self.voice(for: language, identifier: voiceIdentifier) else {
@@ -613,6 +685,7 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
     private func finish() {
         activeUtteranceID = nil
         queuedUtteranceIDs.removeAll()
+        waitingSpeech.removeAll()
         isPlaying = false
         let callbacks = completions
         completions = []
@@ -621,7 +694,8 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
 
     private func completed(_ id: ObjectIdentifier) {
         if queuedUtteranceIDs.remove(id) != nil {
-            isPlaying = activeUtteranceID != nil || !queuedUtteranceIDs.isEmpty
+            playNextQueuedSpeech()
+            isPlaying = activeUtteranceID != nil || !queuedUtteranceIDs.isEmpty || !waitingSpeech.isEmpty
         } else if activeUtteranceID == id {
             activeUtteranceID = nil
             isPlaying = !queuedUtteranceIDs.isEmpty

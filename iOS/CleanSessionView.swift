@@ -34,7 +34,8 @@ struct CleanSessionView: View {
                                 LazyVStack(spacing: 13) {
                                     ForEach(Array(controller.lines.enumerated()), id: \.element.id) { index, line in
                                         if mode == .listen {
-                                            LiveTranscriptCard(original: line.original, translated: line.translated,
+                                            LiveTranscriptCard(original: line.original, translated: line.translated.isEmpty
+                                                ? line.translationIssue ?? "" : line.translated,
                                                                index: index + 1, completed: true,
                                                                size: preferences.fontSize)
                                                 .contextMenu {

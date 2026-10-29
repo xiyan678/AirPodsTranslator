@@ -114,6 +114,66 @@ final class LiveSessionTests: XCTestCase {
         XCTAssertEqual(controller.lines.map(\.original), ["Sentence 1", "Sentence 2"])
         XCTAssertEqual(controller.lines.last?.translated, "第二句译文")
         XCTAssertEqual(store.conversations.first?.lines.map(\.original), ["Sentence 1", "Sentence 2"])
+        XCTAssertNotNil(controller.lines.first?.translationIssue)
+    }
+
+    func testConfirmedNativeSentenceTranslatesBeforeSilenceAndKeepsTheAudioTail() async {
+        let capture = AudioCapture()
+        var finalAudio: [[Float]] = []
+        var commits = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { samples, _ in finalAudio.append(samples); return ("The second sentence.", "en") },
+            translation: { text, _, _, _, _ in "译文 \(text)" },
+            partialRecognition: { _, _ in
+                SpeechRecognitionUpdate(text: "The first sentence. The second", language: "en",
+                    confirmedPrefix: .init(text: "The first sentence.", sampleCount: 16_000))
+            },
+            commitRecognition: { _, _ in commits += 1 }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "演讲" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        await controller.start()
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { controller.lines.count == 1 }
+        XCTAssertTrue(capture.isRecording)
+        XCTAssertEqual(controller.lines.map(\.original), ["The first sentence."])
+        controller.end(save: true)
+        await eventually { controller.hasEnded && !store.conversations.isEmpty }
+        XCTAssertEqual(controller.lines.map(\.original), ["The first sentence.", "The second sentence."])
+        XCTAssertEqual(commits, 1)
+        XCTAssertEqual(finalAudio.first?.count, 16_000, "提交前半句后，结束时仍要处理后半句的所有音频")
+    }
+
+    func testLatePartialCannotCommitAfterTheAudioWindowAlreadyEnded() async {
+        let capture = AudioCapture()
+        let gate = TranslationGate()
+        defer { gate.release() }
+        var commits = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, _ in ("The whole final sentence.", "en") },
+            translation: { text, _, _, _, _ in "译文 \(text)" },
+            partialRecognition: { _, _ in
+                _ = await gate.wait()
+                return SpeechRecognitionUpdate(text: "Stale sentence.", language: "en",
+                    confirmedPrefix: .init(text: "Stale sentence.", sampleCount: 16_000))
+            },
+            commitRecognition: { _, _ in commits += 1 }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "演讲" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        await controller.start()
+        capture.feedExternal(Array(repeating: 0.2, count: 32_000))
+        await eventually { gate.waiting }
+        capture.feedExternal(Array(repeating: 0, count: 32_000))
+        controller.end(save: true)
+        gate.release()
+        await eventually { controller.hasEnded && !store.conversations.isEmpty }
+        XCTAssertEqual(controller.lines.map(\.original), ["The whole final sentence."])
+        XCTAssertEqual(commits, 0)
     }
 
     func testTimedOutTextCanBeResentBeforeOldTranslationReturns() async {

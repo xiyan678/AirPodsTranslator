@@ -86,7 +86,8 @@ final class ConversationController: ObservableObject {
     private var pending: [[Float]] = []
     private var pausedSamples: [[Float]] = []
     private var activeSamples: (samples: [Float], session: UUID)?
-    private var latestPartial: [Float]?
+    private var latestPartial: (samples: [Float], window: UUID)?
+    private var recognitionWindow: UUID?
     private var draining = false
     private var sessionID: UUID?
     private var imageRequestID: UUID?
@@ -334,6 +335,8 @@ final class ConversationController: ObservableObject {
 
     func pause() {
         guard !isEnding else { return }
+        services.resetRecognition()
+        recognitionWindow = nil
         if let item = waitingUtterance ?? restoringUtterance {
             pausedUtterances.append(item)
         } else if let activeSamples { pausedSamples.append(activeSamples.samples) }
@@ -477,6 +480,10 @@ final class ConversationController: ObservableObject {
     func replay(_ selectedLine: TranscriptLine? = nil, output: AudioDestination? = nil) {
         guard !isEnding else { return }
         guard let line = selectedLine ?? lines.last else { return }
+        guard !line.translated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            status = line.translationIssue ?? "这句话还没有译文"
+            return
+        }
         guard !draining, pending.isEmpty, waitingUtterance == nil,
               phase == .listening || phase == .paused || phase == .idle else {
             status = "当前语音处理完后再重播"
@@ -527,7 +534,8 @@ final class ConversationController: ObservableObject {
 
     private func configureCaptureCallbacks() {
         capture.onPartial = { [weak self] samples in
-            self?.latestPartial = samples
+            guard let self else { return }
+            self.latestPartial = (samples, self.capture.windowID)
             Task { await self?.drain() }
         }
         capture.onUtterance = { [weak self] samples in
@@ -622,15 +630,20 @@ final class ConversationController: ObservableObject {
             } else if !pending.isEmpty {
                 let samples = pending.removeFirst()
                 await process(samples)
-            } else if let samples = latestPartial {
+            } else if let partial = latestPartial {
                 latestPartial = nil
-                await processPartial(samples)
+                await processPartial(partial.samples, window: partial.window)
             }
         }
     }
 
-    private func processPartial(_ samples: [Float]) async {
-        guard let activeSession = sessionID else { return }
+    private func processPartial(_ samples: [Float], window: UUID) async {
+        guard let activeSession = sessionID, capture.windowID == window else { return }
+        if recognitionWindow != window {
+            services.resetRecognitionWindow()
+            recognitionWindow = window
+        }
+        let selectedLanguage = recognitionLanguage
         transition(to: .recognizing)
         defer {
             if sessionID == activeSession && phase == .recognizing && pending.isEmpty {
@@ -638,11 +651,25 @@ final class ConversationController: ObservableObject {
             }
         }
         do {
-            let recognized = try await services.recognize(samples, language: recognitionLanguage)
-            if sessionID == activeSession && pending.isEmpty && waitingUtterance == nil {
+            let recognized = try await services.recognizePartial(samples, language: selectedLanguage)
+            if sessionID == activeSession && pending.isEmpty && waitingUtterance == nil &&
+                capture.windowID == window && selectedLanguage == recognitionLanguage {
+                let source = selectedLanguage ?? AppLanguage.normalizedCode(recognized.language)
+                if mode == .listen, let prefix = recognized.confirmedPrefix,
+                   let prefixText = RecognizedSpeechText.cleaned(prefix.text), prefix.sampleCount <= samples.count,
+                   AppLanguage.all.contains(where: { $0.code == source }),
+                   capture.commitPrefix(prefix.sampleCount, window: window) {
+                    services.commitRecognition?(prefix, source)
+                    recognitionWindow = nil
+                    latestPartial = nil
+                    clearLivePreview()
+                    if let item = makeUtterance(prefixText, source: source, session: activeSession) {
+                        pausedUtterances.append(item)
+                    }
+                    return
+                }
                 liveText = RecognizedSpeechText.cleaned(recognized.text) ?? ""
-                updateLiveTranslation(source: recognitionLanguage ?? AppLanguage.normalizedCode(recognized.language),
-                                      session: activeSession)
+                updateLiveTranslation(source: source, session: activeSession)
             }
         } catch { }
     }
@@ -711,6 +738,10 @@ final class ConversationController: ObservableObject {
         activeSamples = (samples, activeSession)
         defer {
             if activeSamples?.session == activeSession { activeSamples = nil }
+            if sessionID == activeSession {
+                services.resetRecognitionWindow()
+                recognitionWindow = nil
+            }
         }
         transition(to: .recognizing)
         let selectedLanguage = recognitionLanguage
@@ -723,27 +754,53 @@ final class ConversationController: ObservableObject {
                 return
             }
             let source = selectedLanguage ?? AppLanguage.normalizedCode(recognized.language)
-            correctionLanguage = nil
-            guard AppLanguage.all.contains(where: { $0.code == source }) else {
-                status = "暂不支持识别到的语言：\(source)"
-                transition(to: .listening)
-                return
-            }
-            detectedLanguage = source
-            let mine = source == preferences.preferredLanguage && mode == .dialogue
-            if mine == false && source != preferences.preferredLanguage { lastOtherLanguage = source }
-            if lastOtherLanguage == preferences.preferredLanguage {
-                lastOtherLanguage = preferences.preferredLanguage == "en" ? "zh" : "en"
-            }
-            let target = mine ? lastOtherLanguage : preferences.preferredLanguage
-            guard source != target else { transition(to: .listening); return }
-            await translateAndPlay(PendingUtterance(text: recognizedText, source: source,
-                                                    target: target, mine: mine, sessionID: activeSession))
+            if let item = makeUtterance(recognizedText, source: source, session: activeSession) {
+                await translateAndPlay(item)
+            } else { transition(to: .listening) }
         } catch {
             guard sessionID == activeSession else { return }
             status = "没听清，继续倾听…"
             transition(to: .listening)
         }
+    }
+
+    private func makeUtterance(_ recognizedText: String, source: String, session: UUID) -> PendingUtterance? {
+        correctionLanguage = nil
+        guard AppLanguage.all.contains(where: { $0.code == source }) else {
+            status = "暂不支持识别到的语言：\(source)"
+            return nil
+        }
+        detectedLanguage = source
+        let mine = source == preferences.preferredLanguage && mode == .dialogue
+        if mine == false && source != preferences.preferredLanguage { lastOtherLanguage = source }
+        if lastOtherLanguage == preferences.preferredLanguage {
+            lastOtherLanguage = preferences.preferredLanguage == "en" ? "zh" : "en"
+        }
+        let target = mine ? lastOtherLanguage : preferences.preferredLanguage
+        guard source != target else { return nil }
+        return PendingUtterance(text: recognizedText, source: source,
+                                target: target, mine: mine, sessionID: session)
+    }
+
+    private func translateLive(_ item: PendingUtterance, preparedSession: TranslationSession?) async throws -> String {
+        for attempt in 0..<3 {
+            guard sessionID == item.sessionID else { throw CancellationError() }
+            do {
+                let mode = preferences.processingMode
+                let text = try await AsyncDeadline<String>.run(timeout: .seconds(20)) { [services] in
+                    try await services.translate(item.text, from: item.source, to: item.target,
+                                                 mode: mode, preparedSession: preparedSession)
+                }
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw URLError(.cannotDecodeContentData)
+                }
+                return text
+            } catch {
+                if error is CancellationError || (error as? TranslatorError) != nil || attempt == 2 { throw error }
+                try await Task.sleep(for: .milliseconds(attempt == 0 ? 100 : 250))
+            }
+        }
+        throw URLError(.unknown)
     }
 
     private func translateAndPlay(_ item: PendingUtterance, allowDownload: Bool = true,
@@ -752,9 +809,9 @@ final class ConversationController: ObservableObject {
         do {
             transition(to: .translating)
             status = "正在翻译 \(AppLanguage.name(item.source))…"
-            let translated = try await services.translate(item.text, from: item.source,
-                                                             to: item.target, mode: preferences.processingMode,
-                                                             preparedSession: preparedSession)
+            // 正式译文优先于预览，避免旧预览和整句翻译争抢同一语言模型。
+            clearLivePreview()
+            let translated = try await translateLive(item, preparedSession: preparedSession)
             guard sessionID == item.sessionID else { return }
             let line = TranscriptLine(sourceLanguage: item.source, targetLanguage: item.target,
                                       original: item.text, translated: translated, isMine: item.mine)
@@ -820,7 +877,13 @@ final class ConversationController: ObservableObject {
                 requestLanguagePack(from: source, to: target)
                 return
             }
-            status = "这句话没有翻译成功，请再说一次"
+            var untranslated = TranscriptLine(sourceLanguage: item.source, targetLanguage: item.target,
+                original: item.text, translated: "", isMine: item.mine)
+            untranslated.translationIssue = "翻译未完成，原文已保留"
+            lines.append(untranslated)
+            activeSamples = nil
+            if restoringUtterance?.sessionID == item.sessionID { restoringUtterance = nil }
+            status = "翻译未完成，原文已保留"
             resumeCapture()
         }
     }
@@ -953,6 +1016,7 @@ final class ConversationController: ObservableObject {
             lines[index].sourceLanguage = revision.source
             lines[index].targetLanguage = revision.target
             lines[index].translated = result
+            lines[index].translationIssue = nil
             lines[index].isMine = mode == .dialogue && revision.source == preferences.preferredLanguage
             watch.publish(running: isRunning, latest: result)
             status = "上一句已更新"

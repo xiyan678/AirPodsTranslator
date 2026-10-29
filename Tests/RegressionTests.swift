@@ -418,10 +418,37 @@ final class RegressionTests: XCTestCase {
         capture.feedExternal(Array(repeating: 0.01, count: 1_600))   // 0.1 秒轻声（词间）
         capture.feedExternal(Array(repeating: 0.2, count: 48_000))   // 再讲 3 秒，超过 8 秒上限
         XCTAssertEqual(utterances.count, 1)
-        XCTAssertEqual(utterances.first?.count, 112_320, "应在轻声处切开，而不是硬切在 8 秒")
+        XCTAssertTrue((112_000...113_600).contains(utterances.first?.count ?? 0),
+                      "应在低音量区间切开，而不是切在下一词的强语音上")
         let rest = capture.takePendingSpeech()
         XCTAssertEqual((utterances.first?.count ?? 0) + (rest?.count ?? 0), 112_000 + 1_600 + 48_000,
                        "切开后前后两段加起来不能丢音频")
+        capture.stop()
+    }
+
+    func testCommittedPrefixKeepsEveryRemainingSampleAndRejectsStaleWindow() {
+        let capture = AudioCapture()
+        capture.startExternal()
+        let audio = (0..<32_000).map { Float(0.15) + Float($0 % 100) / 1000 }
+        capture.feedExternal(audio)
+        let originalWindow = capture.windowID
+        XCTAssertTrue(capture.commitPrefix(16_000, window: originalWindow))
+        XCTAssertFalse(capture.commitPrefix(16_000, window: originalWindow), "同一个旧前缀不能裁切两次")
+        XCTAssertEqual(capture.takePendingSpeech(), Array(audio[16_000...]))
+        capture.stop()
+    }
+
+    func testCorruptAudioCannotPoisonLaterSpeechDetection() {
+        let capture = AudioCapture()
+        var utterances: [[Float]] = []
+        capture.onUtterance = { utterances.append($0) }
+        capture.startExternal()
+        capture.feedExternal([.nan, .infinity])
+        capture.feedExternal(Array(repeating: 0.2, count: 3_200))
+        capture.feedExternal(Array(repeating: 0, count: 32_000))
+        XCTAssertEqual(utterances.count, 1)
+        XCTAssertTrue(utterances[0].allSatisfy(\.isFinite))
+        XCTAssertTrue(capture.level.isFinite)
         capture.stop()
     }
 

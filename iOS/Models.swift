@@ -1,6 +1,37 @@
 import Foundation
 import NaturalLanguage
 
+enum SpeechTextJoiner {
+    static func join(_ parts: [String]) -> String {
+        func compact(_ character: Character) -> Bool {
+            character.unicodeScalars.contains {
+                (0x3000...0x30FF).contains($0.value) || (0x3400...0x9FFF).contains($0.value) ||
+                (0xF900...0xFAFF).contains($0.value)
+            }
+        }
+        var text = ""
+        for raw in parts {
+            let part = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !part.isEmpty else { continue }
+            if let left = text.last, let right = part.first,
+               !left.isWhitespace, !right.isWhitespace,
+               right.isLetter || right.isNumber,
+               !compact(left), !compact(right), left != "'", left != "’" {
+                text += " "
+            }
+            text += part
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum WhisperLanguageConfidence {
+    static func accepts(_ logProbability: Float?) -> Bool {
+        guard let logProbability, logProbability.isFinite, logProbability <= 0 else { return false }
+        return exp(logProbability) >= 0.6
+    }
+}
+
 /// 相邻两次识别都一致的前缀才用于预览翻译，最终整句仍重新识别。
 struct LiveTranscriptStabilizer {
     private var previous = ""
@@ -34,6 +65,25 @@ struct LiveTranscriptStabilizer {
     }
 
     mutating func reset() { previous = ""; language = "" }
+}
+
+/// 仅在已有译文积压时温和追赶；不截断正在播的句子，也不删除待播内容。
+enum SpeechBacklog {
+    static func estimatedSeconds(_ text: String, rate: Float) -> Double {
+        let eastern = text.unicodeScalars.filter {
+            (0x3400...0x9FFF).contains($0.value) || (0x3040...0x30FF).contains($0.value) ||
+            (0xAC00...0xD7AF).contains($0.value)
+        }.count
+        let words = text.split(whereSeparator: \.isWhitespace).count
+        let normalSeconds = eastern > 0 ? Double(eastern) / 4 : Double(words) / 2.7
+        return normalSeconds * 0.5 / Double(max(0.1, rate))
+    }
+
+    static func adjustedRate(_ requested: Float, backlog: Double) -> Float {
+        guard backlog.isFinite, requested.isFinite else { return 0.5 }
+        let factor = 1 + min(0.2, max(0, backlog - 6) / 60)
+        return min(1, max(0.1, requested * Float(factor)))
+    }
 }
 
 enum ConversationMode: String, CaseIterable, Identifiable, Codable {
@@ -89,6 +139,8 @@ struct TranscriptLine: Identifiable, Codable {
     var original: String
     var translated: String
     var isMine: Bool
+    /// 可选字段兼容旧历史；失败时仍保存真实原文，错误提示不混入译文或总结。
+    var translationIssue: String? = nil
 }
 
 struct SavedConversation: Identifiable, Codable {
@@ -198,9 +250,6 @@ enum SpeechSegmentFilter {
     }
 
     static func joinedText(_ segments: [RecognizedSegment]) -> String {
-        segments.filter(isSpeech)
-            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        SpeechTextJoiner.join(segments.filter(isSpeech).map(\.text))
     }
 }
