@@ -829,7 +829,7 @@ final class ConversationController: ObservableObject {
     func languagePackFailed(_ error: Error, for requestID: UUID) {
         guard languagePackRequest?.id == requestID else { return }
         let resumeUtterance = waitingUtterance != nil
-        let cancelled = error is CancellationError ||
+        let cancelled = error is CancellationError || (TranslationError.alreadyCancelled ~= error) ||
             (error as NSError).domain == NSCocoaErrorDomain &&
             (error as NSError).code == CocoaError.Code.userCancelled.rawValue ||
             (error as NSError).domain == NSURLErrorDomain &&

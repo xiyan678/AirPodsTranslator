@@ -1,4 +1,5 @@
 import XCTest
+import Translation
 @testable import AirPodsTranslator
 
 @MainActor
@@ -86,7 +87,7 @@ final class RegressionTests: XCTestCase {
         controller.lastOtherLanguage = "en"
         controller.dialogueKeyboardDraft = "你好"
         for cancellation: Error in [CocoaError(.userCancelled), CancellationError(),
-                                    URLError(.cancelled)] {
+                                    URLError(.cancelled), TranslationError.alreadyCancelled] {
             await controller.sendDialogueText("你好")
             guard let request = controller.languagePackRequest else {
                 return XCTFail("Expected language preparation request")
