@@ -1011,11 +1011,9 @@ final class ConversationController: ObservableObject {
                 latestPartial = nil
                 clearLivePreview()
             }
-            // 面对面对话里，自己输入的话是给对方听的，应和语音输入一样走手机扬声器。
-            let mine = textRequestIsDialogue && source == preferences.preferredLanguage
-            let output: AudioDestination = textRequestIsDialogue ? (mine ? .speaker : destination) : .earphones
+            // .earphones 使用 playback 会话，跟随系统输出；未连接耳机时由手机播放。
             let played = player.speak(result, language: target, rate: preferences.speechRate,
-                                      destination: output) { [weak self] in
+                                      destination: .earphones) { [weak self] in
                 guard let self, shouldResumeCapture, self.sessionID == activeSession,
                       !self.draining else { return }
                 if self.pending.isEmpty { self.resumeCapture() }
