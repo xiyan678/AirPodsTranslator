@@ -3,10 +3,15 @@ import Combine
 
 @MainActor
 final class Preferences: ObservableObject {
+    static func manualSource(_ saved: String?, target: String) -> String {
+        if let saved, saved != target, AppLanguage.all.contains(where: { $0.code == saved }) { return saved }
+        return target == "en" ? "zh" : "en"
+    }
+
     @Published var preferredLanguage = UserDefaults.standard.string(forKey: "preferredLanguage") ?? "zh" {
         didSet { UserDefaults.standard.set(preferredLanguage, forKey: "preferredLanguage") }
     }
-    @Published var sourceLanguage = UserDefaults.standard.string(forKey: "sourceLanguage") ?? "auto" {
+    @Published var sourceLanguage = Self.manualSource(UserDefaults.standard.string(forKey: "sourceLanguage"), target: UserDefaults.standard.string(forKey: "preferredLanguage") ?? "zh") {
         didSet { UserDefaults.standard.set(sourceLanguage, forKey: "sourceLanguage") }
     }
     @Published var autoReadAloud = UserDefaults.standard.object(forKey: "autoReadAloud") as? Bool ?? true {

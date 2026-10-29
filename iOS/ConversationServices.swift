@@ -40,7 +40,7 @@ struct ConversationServices {
 
     static func live(whisper: WhisperService, capture: AudioCapture) -> Self {
         let translator = LocalTranslator()
-        let sherpa = SherpaSpeech()
+        let sherpa = SherpaSpeech.shared
         let recognizer = AdaptiveSpeechRecognizer(
             fallback: { samples, language, context in
                 try await whisper.recognize(samples, language: language, context: context)

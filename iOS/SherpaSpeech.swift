@@ -1,10 +1,30 @@
 import Foundation
 import NaturalLanguage
 import SherpaOnnx
+import Combine
 
 /// Download once into Application Support; incomplete downloads never become model files.
 @MainActor
-final class SherpaSpeech {
+final class SherpaSpeech: ObservableObject {
+    static let shared = SherpaSpeech()
+    @Published private(set) var loading = false
+    @Published private(set) var stage = ""
+    static let files: [(String, Int)] = [
+        ("encoder-epoch-99-avg-1.int8.onnx", 181895032),
+        ("decoder-epoch-99-avg-1.onnx", 13876452),
+        ("joiner-epoch-99-avg-1.int8.onnx", 3228404), ("tokens.txt", 56317)
+    ]
+    static func modelDirectory() throws -> URL {
+        try FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("SherpaZipformer-zh-en")
+    }
+    static var installed: Bool {
+        guard let directory = try? modelDirectory() else { return false }
+        return files.allSatisfy { name, size in
+            (try? directory.appendingPathComponent(name).resourceValues(forKeys: [.fileSizeKey]).fileSize) == size
+        }
+    }
     private var engine: SherpaStreamingEngine?
     private var preparation: Task<SherpaStreamingEngine, Error>?
     private var needsReset = false
@@ -13,20 +33,17 @@ final class SherpaSpeech {
     func prepare() async throws {
         if engine != nil { return }
         if let preparation { engine = try await preparation.value; return }
+        loading = true
+        defer { loading = false }
         let task = Task<SherpaStreamingEngine, Error> {
-            let directory = try FileManager.default.url(for: .applicationSupportDirectory,
-                in: .userDomainMask, appropriateFor: nil, create: true)
-                .appendingPathComponent("SherpaZipformer-zh-en")
+            let directory = try Self.modelDirectory()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let files: [(String, Int)] = [
-                ("encoder-epoch-99-avg-1.int8.onnx", 181895032),
-                ("decoder-epoch-99-avg-1.onnx", 13876452),
-                ("joiner-epoch-99-avg-1.int8.onnx", 3228404), ("tokens.txt", 56317)
-            ]
-            for (name, size) in files {
+            for (index, file) in Self.files.enumerated() {
+                let (name, size) = file
                 try Task.checkCancellation()
                 let path = directory.appendingPathComponent(name)
                 if (try? path.resourceValues(forKeys: [.fileSizeKey]).fileSize) == size { continue }
+                self.stage = "正在下载中英语音模型（\(index + 1)/\(Self.files.count)）"
                 let url = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/\(name)")!
                 let (temporary, response) = try await URLSession.shared.download(from: url)
                 defer { try? FileManager.default.removeItem(at: temporary) }
@@ -38,6 +55,7 @@ final class SherpaSpeech {
                 if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
                 try FileManager.default.moveItem(at: temporary, to: path)
             }
+            self.stage = "正在载入中英语音模型…"
             return try await SherpaStreamingEngine.make(directory: directory)
         }
         preparation = task

@@ -195,7 +195,7 @@ struct CleanSessionView: View {
                 .font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundStyle(StudioStyle.ink)
             Text(mode == .listen ? emptySubtitle : keyboardMode
-                 ? "输入任一语言，自动识别并翻译成另一种语言。"
+                 ? "选择输入语言，翻译并朗读译文。"
                  : "选择说话的人，完成后自动显示译文。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -337,14 +337,20 @@ struct CleanSessionView: View {
 
     private var keyboardControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("自动识别输入语言")
+            Menu {
+                ForEach(AppLanguage.all) { language in
+                    Button(language.name) { preferences.sourceLanguage = language.code }
+                }
+            } label: {
+                Label("输入语言：\(AppLanguage.name(preferences.sourceLanguage))", systemImage: "chevron.up.chevron.down")
+            }
                 .font(.footnote).foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                TextField("输入文字，自动识别语言", text: $controller.dialogueKeyboardDraft)
+                TextField("输入要翻译的文字", text: $controller.dialogueKeyboardDraft)
                     .focused($inputFocused)
                     .submitLabel(.send)
                     .onSubmit { sendText() }
-                    .accessibilityLabel("输入文字，自动识别语言")
+                    .accessibilityLabel("输入要翻译的文字")
                     .padding(16)
                     .background(.white, in: RoundedRectangle(cornerRadius: 20))
                 Button(action: sendText) {

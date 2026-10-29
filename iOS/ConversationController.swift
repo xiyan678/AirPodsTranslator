@@ -65,7 +65,7 @@ final class ConversationController: ObservableObject {
     var activeDialogueLanguage: String? { isRunning && mode == .dialogue ? forcedLanguage : nil }
     private var recognitionLanguage: String? {
         forcedLanguage ?? correctionLanguage ??
-        (mode == .listen && preferences.sourceLanguage != "auto" ? preferences.sourceLanguage : nil)
+        Preferences.manualSource(preferences.sourceLanguage, target: preferences.preferredLanguage)
     }
 
     let preferences = Preferences()
@@ -318,7 +318,7 @@ final class ConversationController: ObservableObject {
             configureCaptureCallbacks()
             try services.startCapture()
             transition(to: .listening)
-            status = "正在自动识别语音…"
+            status = "正在识别\(AppLanguage.name(recognitionLanguage ?? preferences.sourceLanguage))…"
             pending.append(contentsOf: pausedSamples)
             pausedSamples = []
             if !pending.isEmpty || !pausedUtterances.isEmpty { Task { await drain() } }
@@ -901,7 +901,7 @@ final class ConversationController: ObservableObject {
                 else { try services.startCapture() }
             }
             transition(to: .listening)
-            status = isBroadcastMode ? "正在识别屏幕音频…" : "正在自动识别语音…"
+            status = isBroadcastMode ? "正在识别屏幕音频…" : "正在识别\(AppLanguage.name(recognitionLanguage ?? preferences.sourceLanguage))…"
             updateOutputRoute()
         }
         catch {
@@ -1048,7 +1048,7 @@ final class ConversationController: ObservableObject {
 
     func sendDialogueText(_ text: String, requestID: UUID = UUID()) async {
         guard selectMode(.dialogue) else { return }
-        await translateText(text, from: "auto", to: preferences.preferredLanguage,
+        await translateText(text, from: preferences.sourceLanguage, to: preferences.preferredLanguage,
                             inDialogue: true, requestID: requestID)
     }
 

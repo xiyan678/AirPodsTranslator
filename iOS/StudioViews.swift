@@ -30,14 +30,12 @@ struct LiveLanguagePicker: View {
     var body: some View {
         HStack(spacing: 10) {
             Menu {
-                Button("自动识别") { preferences.sourceLanguage = "auto" }
                 ForEach(AppLanguage.all.filter { $0.code != preferences.preferredLanguage }) { language in
                     Button(language.name) { preferences.sourceLanguage = language.code }
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text(preferences.sourceLanguage == "auto" ? "自动识别" :
-                         AppLanguage.name(preferences.sourceLanguage)).lineLimit(1)
+                    Text(AppLanguage.name(preferences.sourceLanguage)).lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down").font(.caption2)
                 }
             }
@@ -53,7 +51,7 @@ struct LiveLanguagePicker: View {
             Menu {
                 ForEach(AppLanguage.all) { language in
                     Button(language.name) {
-                        if preferences.sourceLanguage == language.code { preferences.sourceLanguage = "auto" }
+                        if preferences.sourceLanguage == language.code { preferences.sourceLanguage = preferences.preferredLanguage }
                         preferences.preferredLanguage = language.code
                     }
                 }
@@ -141,7 +139,7 @@ struct TextTranslationView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var preferences: Preferences
     @State private var original = ""
-    @State private var source = "auto"
+    @State private var source = "en"
     @State private var target = "zh"
     private var translating: Bool { controller.isTranslatingText }
 
@@ -156,11 +154,10 @@ struct TextTranslationView: View {
                             .foregroundStyle(StudioStyle.ink)
                         HStack {
                             Menu {
-                                Button("自动识别") { source = "auto" }
                                 ForEach(AppLanguage.all) { language in
                                     Button(language.name) { source = language.code }
                                 }
-                            } label: { Text(source == "auto" ? "自动识别" : AppLanguage.name(source)) }
+                            } label: { Text(AppLanguage.name(source)) }
                             Spacer()
                             Image(systemName: "arrow.right").foregroundStyle(StudioStyle.violet)
                             Spacer()
@@ -220,6 +217,7 @@ struct TextTranslationView: View {
             .navigationTitle("文本翻译")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
             .onAppear {
+                source = preferences.sourceLanguage
                 target = preferences.preferredLanguage
                 original = controller.textOriginal
             }

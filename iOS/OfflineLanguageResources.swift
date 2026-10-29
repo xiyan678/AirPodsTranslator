@@ -12,6 +12,10 @@ struct OfflineLanguageResources {
 
     static var live: Self {
         Self(speechAsset: { language in
+            if SherpaSpeech.supports(language) {
+                return SpeechAsset(isInstalled: { SherpaSpeech.installed },
+                                   install: { try await SherpaSpeech.shared.prepare() })
+            }
             guard let transcriber = await AppleSpeechSession.supportedTranscriber(language: language),
                   await AssetInventory.status(forModules: [transcriber]) != .unsupported else { return nil }
             return SpeechAsset(

@@ -383,7 +383,6 @@ struct SettingsView: View {
             Form {
                 Section("语言") {
                     Picker("源语言", selection: $preferences.sourceLanguage) {
-                        Text("自动识别").tag("auto")
                         ForEach(AppLanguage.all) { Text($0.name).tag($0.code) }
                     }
                     Picker("目标语言", selection: $preferences.preferredLanguage) {
@@ -457,10 +456,10 @@ struct SettingsView: View {
             .background(StudioBackground().ignoresSafeArea())
             .manageSubscriptionsSheet(isPresented: $showManageSubscriptions)
             .onChange(of: preferences.sourceLanguage) { _, source in
-                if source == preferences.preferredLanguage { preferences.sourceLanguage = "auto" }
+                if source == preferences.preferredLanguage { preferences.sourceLanguage = Preferences.manualSource(nil, target: source) }
             }
             .onChange(of: preferences.preferredLanguage) { _, target in
-                if target == preferences.sourceLanguage { preferences.sourceLanguage = "auto" }
+                if target == preferences.sourceLanguage { preferences.sourceLanguage = Preferences.manualSource(nil, target: target) }
             }
         }
     }
@@ -483,11 +482,20 @@ private struct PremiumStatusCard: View {
 
 struct LanguagePacksView: View {
     @ObservedObject var preferences: Preferences
+    @ObservedObject private var sherpa = SherpaSpeech.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selected = "en"
     @State private var reverse = false
     @State private var config: TranslationSession.Configuration?
     @State private var requestedPair: (source: String, target: String)?
     @State private var message = ""
+    @State private var resources: [InstalledResource] = []
+    @State private var pairStatus = "正在检查…"
+    private struct InstalledResource: Identifiable {
+        var id: String { title }
+        let title: String
+        let status: String
+    }
     private var choices: [LanguageOption] {
         AppLanguage.all.filter { $0.code != preferences.preferredLanguage }
     }
@@ -502,6 +510,7 @@ struct LanguagePacksView: View {
                 Text("听对方").tag(false)
                 Text("我回复").tag(true)
             }.pickerStyle(.segmented)
+            Text(pairStatus).font(.footnote).foregroundStyle(.secondary)
             Button("下载并准备离线语言") {
                 guard selected != preferences.preferredLanguage else {
                     message = "请选择另一种语言"
@@ -513,18 +522,36 @@ struct LanguagePacksView: View {
                 config = TranslationConfigurationFactory.make(
                     source: source, target: target, mode: preferences.processingMode
                 )
-            }.disabled(config != nil || choices.isEmpty)
-            if config != nil {
+            }.disabled(config != nil || sherpa.loading || choices.isEmpty)
+            if config != nil || sherpa.loading {
                 HStack {
                     ProgressView()
-                    Text("正在准备翻译和语音资源…")
+                    Text(sherpa.loading ? sherpa.stage : "正在准备翻译和语音资源…")
                 }
             }
-            Text(message)
+            if !message.isEmpty { Text(message) }
+            Section("已下载的模型和语言包") {
+                ForEach(resources) { item in
+                    HStack {
+                        Text(item.title)
+                        Spacer()
+                        Text(item.status).foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .navigationTitle("离线语言包")
         .onAppear { syncSelection() }
         .onChange(of: preferences.preferredLanguage) { _, _ in syncSelection() }
+        .task(id: "\(selected)-\(reverse)-\(preferences.preferredLanguage)-\(preferences.processingMode.rawValue)") {
+            await refreshResources()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await refreshResources() } }
+        }
+        .onChange(of: sherpa.loading) { _, loading in
+            if !loading { Task { await refreshResources() } }
+        }
         .translationTask(config) { session in
             guard let requestedPair else { return }
             do {
@@ -544,7 +571,54 @@ struct LanguagePacksView: View {
             }
             config = nil
             self.requestedPair = nil
+            await refreshResources()
         }
+    }
+
+    private func refreshResources() async {
+        let target = preferences.preferredLanguage
+        let chosen = selected
+        let direction = reverse
+        let mode = preferences.processingMode
+        let availability: LanguageAvailability
+        if #available(iOS 26.4, *) {
+            availability = LanguageAvailability(preferredStrategy: mode == .quality ? .highFidelity : .lowLatency)
+        } else { availability = LanguageAvailability() }
+        var items = [InstalledResource(title: "中英语音模型 · Sherpa（约 199 MB）",
+                                       status: SherpaSpeech.installed ? "已下载" : "未下载")]
+        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        if LocalWhisperModel.find(home: home, relativePath: UserDefaults.standard.string(forKey: "WhisperBaseModelRelativePath")) != nil {
+            items.append(.init(title: "Whisper Base 语音模型", status: "已下载"))
+        }
+        var chosenStatus = "未下载"
+        for language in AppLanguage.all {
+            if Task.isCancelled { return }
+            if await AppleSpeechSession.installedTranscriber(language: language.code) != nil {
+                items.append(.init(title: "\(language.name)系统语音识别", status: "已安装"))
+            }
+            guard language.code != target else { continue }
+            for backwards in [false, true] {
+                let source = backwards ? target : language.code
+                let destination = backwards ? language.code : target
+                let status = await availability.status(from: Locale.Language(identifier: source),
+                                                       to: Locale.Language(identifier: destination))
+                if status == .installed {
+                    items.append(.init(title: "\(AppLanguage.name(source)) → \(AppLanguage.name(destination))翻译包", status: "已安装"))
+                }
+                if language.code == chosen && backwards == direction {
+                    switch status {
+                    case .installed: chosenStatus = "已安装"
+                    case .supported: chosenStatus = "未下载"
+                    case .unsupported: chosenStatus = "此设备不支持"
+                    @unknown default: chosenStatus = "状态未知"
+                    }
+                }
+            }
+        }
+        guard !Task.isCancelled, selected == chosen, reverse == direction,
+              preferences.preferredLanguage == target, preferences.processingMode == mode else { return }
+        resources = items
+        pairStatus = "所选方向的翻译包：\(chosenStatus)"
     }
 
     private func syncSelection() {
