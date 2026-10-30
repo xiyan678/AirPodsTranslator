@@ -69,13 +69,20 @@ final class SubtitlePictureInPicture: NSObject, ObservableObject {
     }
 
     func update(original: String, translation: String) {
-        self.original = original.isEmpty ? "等待识别语音…" : original
+        let original = original.isEmpty ? "等待识别语音…" : original
+        guard self.original != original || self.translation != translation else { return }
+        self.original = original
         self.translation = translation
         if enabled { render() }
     }
 
     func setPaused(_ paused: Bool) {
-        pausedState.withLock { $0 = paused }
+        let changed = pausedState.withLock { current in
+            guard current != paused else { return false }
+            current = paused
+            return true
+        }
+        guard changed else { return }
         controller?.invalidatePlaybackState()
         if enabled { render() }
     }

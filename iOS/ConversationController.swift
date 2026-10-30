@@ -182,6 +182,7 @@ final class ConversationController: ObservableObject {
 
     private func transition(to next: ConversationPhase) {
         assert(phase.canTransition(to: next), "Unexpected conversation transition: \(phase) → \(next)")
+        guard phase != next else { return }
         phase = next
         pictureInPicture.setPaused(next == .paused || next == .idle)
     }
@@ -212,12 +213,15 @@ final class ConversationController: ObservableObject {
                 Task { @MainActor in self?.consumeUsage() }
             }
             .store(in: &observers)
-        // 屏幕音频每 0.5 秒一块，按 0.25 秒取，避免每块多等最多 1 秒。
+        #if !EAR_YI_DEVICE_TEST
+        // The personal test build has no broadcast extension or App Group entitlement.
+        // 屏幕音频每 0.5 秒一块，按 0.25 秒取，文件操作由后台 actor 完成。
         Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in
-                Task { @MainActor in self?.broadcastInbox.poll() }
+                Task { @MainActor in await self?.broadcastInbox.poll() }
             }
             .store(in: &observers)
+        #endif
         broadcastInbox.onActiveChange = { [weak self] active in
             guard let self else { return }
             if active {
@@ -706,7 +710,8 @@ final class ConversationController: ObservableObject {
                     }
                     return
                 }
-                liveText = RecognizedSpeechText.cleaned(recognized.text) ?? ""
+                let text = RecognizedSpeechText.cleaned(recognized.text) ?? ""
+                if liveText != text { liveText = text }
                 updateLiveTranslation(source: source, session: activeSession)
             }
         } catch { }
