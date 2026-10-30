@@ -1,5 +1,18 @@
 import Foundation
 
+enum CloudSpeechError: LocalizedError {
+    case http(Int)
+    case invalidAudio
+
+    var errorDescription: String? {
+        switch self {
+        case .http(401): "服务连接已失效，请在设置中重新连接。"
+        case .http(let status): "语音服务返回 HTTP \(status)。"
+        case .invalidAudio: "语音服务返回的音频无法播放。"
+        }
+    }
+}
+
 enum CloudSpeechAPI {
     struct Body: Encodable {
         let text: String
@@ -28,9 +41,10 @@ enum CloudSpeechAPI {
         request = try await ServiceAuthorization.authorized(request)
         let (audio, response) = try await URLSession.shared.data(for: request)
         try Task.checkCancellation()
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-              response.mimeType == "audio/mpeg", !audio.isEmpty, audio.count <= 16 * 1024 * 1024 else {
-            throw URLError(.badServerResponse)
+        guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard response.statusCode == 200 else { throw CloudSpeechError.http(response.statusCode) }
+        guard response.mimeType == "audio/mpeg", !audio.isEmpty, audio.count <= 16 * 1024 * 1024 else {
+            throw CloudSpeechError.invalidAudio
         }
         return audio
     }

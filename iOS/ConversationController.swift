@@ -195,6 +195,7 @@ final class ConversationController: ObservableObject {
         self.store = store ?? ConversationStore()
         self.services = services ?? .live(whisper: speechRecognizer, capture: audioCapture)
         player.$isPlaying.assign(to: &$isSpeechPlaying)
+        player.onFailure = { [weak self] message in self?.errorMessage = message }
         preferences.$nearField
             .sink { [weak self] enabled in
                 Task { @MainActor in self?.capture.nearField = enabled }

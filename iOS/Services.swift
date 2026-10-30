@@ -442,7 +442,7 @@ final class AudioCapture: NSObject, ObservableObject {
         let recordingID = UUID()
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: nearField || liveSegmentation ? .voiceChat : .default,
-                                options: [.allowBluetoothA2DP])
+                                options: [.allowBluetoothA2DP, .defaultToSpeaker])
         try session.setActive(true)
         let next = AVAudioEngine()
         let input = next.inputNode
@@ -656,6 +656,7 @@ final class AudioCapture: NSObject, ObservableObject {
 
 @MainActor
 final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
+    var onFailure: ((String) -> Void)?
     private let synthesizer = AVSpeechSynthesizer()
     private var audioPlayer: AVAudioPlayer?
     private var loading: Task<Void, Never>?
@@ -666,6 +667,7 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private struct Item { let text: String; let language: String; let rate: Float }
     private var waiting: [Item] = []
     private var busy = false
+    private var reportedCloudFailure = false
     override init() { super.init(); synthesizer.delegate = self }
 
     static var headphonesConnected: Bool {
@@ -678,8 +680,13 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                  destination: AudioDestination = .earphones) -> Bool {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         // Capture owns the session while simultaneous translation is running.
-        do { try AVAudioSession.sharedInstance().overrideOutputAudioPort(destination == .speaker ? .speaker : .none) }
-        catch { return false }
+        if destination == .speaker {
+            do { try AVAudioSession.sharedInstance().overrideOutputAudioPort(.speaker) }
+            catch {
+                onFailure?("无法切换语音输出：\(error.localizedDescription)")
+                return false
+            }
+        }
         waiting.append(Item(text: text, language: language, rate: rate))
         isPlaying = true
         playNext()
@@ -706,7 +713,11 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             }
             if destination == .speaker { try session.overrideOutputAudioPort(.speaker) }
             else if keepInputActive { try session.overrideOutputAudioPort(.none) }
-        } catch { finish(); return false }
+        } catch {
+            onFailure?("无法启动语音播放：\(error.localizedDescription)")
+            finish()
+            return false
+        }
         waiting = [Item(text: text, language: language, rate: rate)]
         isPlaying = true
         playNext()
@@ -727,14 +738,23 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             do {
                 let data = try await CloudSpeechAPI.synthesize(item.text, rate: rate)
                 guard let self, !Task.isCancelled, self.generation == token else { return }
+                self.reportedCloudFailure = false
                 let player = try AVAudioPlayer(data: data)
                 player.delegate = self
                 self.audioPlayer = player
                 guard player.play() else { throw URLError(.cannotDecodeContentData) }
             } catch {
                 guard let self, !Task.isCancelled, self.generation == token else { return }
+                if !self.reportedCloudFailure {
+                    self.reportedCloudFailure = true
+                    self.onFailure?("安娜语音播放失败，正在尝试系统语音：\(error.localizedDescription)")
+                }
                 // Network failure must not leave dialogue waiting indefinitely.
-                guard let voice = Self.voice(for: item.language) else { self.completed(); return }
+                guard let voice = Self.voice(for: item.language) else {
+                    self.onFailure?("当前设备没有\(AppLanguage.name(item.language))系统语音")
+                    self.completed()
+                    return
+                }
                 let utterance = AVSpeechUtterance(string: item.text)
                 utterance.voice = voice
                 utterance.rate = rate
@@ -752,6 +772,7 @@ final class SpeechPlayer: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     private func cancelPlayback() {
         generation = UUID()
+        reportedCloudFailure = false
         loading?.cancel(); loading = nil
         audioPlayer?.stop(); audioPlayer = nil
         activeUtteranceID = nil
