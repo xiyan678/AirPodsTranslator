@@ -6,6 +6,7 @@ import SwiftUI
 final class BroadcastAudioInbox {
     var onActiveChange: ((Bool) -> Void)?
     var onSamples: (([Float]) -> Void)?
+    var onError: ((String) -> Void)?
     var canConsume: (() -> Bool)?
     private(set) var active = false
     private let directory: () -> URL?
@@ -18,7 +19,11 @@ final class BroadcastAudioInbox {
         guard let directory = directory() else { return }
         let marker = directory.appendingPathComponent(BroadcastStorage.activeFile)
         let modified = (try? marker.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        let nowActive = modified.map { Date().timeIntervalSince($0) < 5 } ?? false
+        let chunks = ((try? FileManager.default.contentsOfDirectory(at: directory,
+                                                                     includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix(BroadcastStorage.chunkPrefix) && $0.pathExtension == "pcm" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let nowActive = (modified.map { Date().timeIntervalSince($0) < 5 } ?? false) || !chunks.isEmpty
         let ending = active && !nowActive
         // The extension writes its tail before removing the marker. Deliver it
         // while capture is still running, then let the controller end/save.
@@ -29,15 +34,17 @@ final class BroadcastAudioInbox {
             active = nowActive
             onActiveChange?(nowActive)
         }
-        let chunks = ((try? FileManager.default.contentsOfDirectory(at: directory,
-                                                                     includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.lastPathComponent.hasPrefix(BroadcastStorage.chunkPrefix) }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard canConsume?() == true || !active else { return }
         for url in chunks {
-            guard let data = try? Data(contentsOf: url), data.count.isMultiple(of: 4) else { continue }
-            try? FileManager.default.removeItem(at: url)
-            guard active else { continue }
+            guard let data = try? Data(contentsOf: url) else { return }
+            guard !data.isEmpty, data.count.isMultiple(of: 4) else {
+                onError?("屏幕音频缓存已损坏，无法识别该片段")
+                do { try FileManager.default.removeItem(at: url) }
+                catch { return }
+                continue
+            }
+            do { try FileManager.default.removeItem(at: url) }
+            catch { onError?("屏幕音频缓存无法清理：\(error.localizedDescription)"); return }
             var samples = [Float](repeating: 0, count: data.count / 4)
             samples.withUnsafeMutableBytes { bytes in bytes.copyBytes(from: data) }
             onSamples?(samples)

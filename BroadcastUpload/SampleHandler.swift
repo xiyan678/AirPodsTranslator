@@ -7,10 +7,16 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var sequence = 0
     private var lastHeartbeat = Date.distantPast
     private var cachedConverter: AVAudioConverter?
+    private var storageFailed = false
     private static let chunkSamples = 8_000
-    private static let maximumQueuedChunks = 60
+    private static let maximumQueuedChunks = 1_200
 
     override func broadcastStarted(withSetupInfo setupInfo: [String : NSObject]?) {
+        storageFailed = false
+        pending = []
+        sequence = 0
+        cachedConverter = nil
+        lastHeartbeat = .distantPast
         guard let directory = BroadcastStorage.directory else {
             finishBroadcastWithError(NSError(domain: "EarTranslation", code: 1,
                                              userInfo: [NSLocalizedDescriptionKey: "请先启用 App Group 后重试"]))
@@ -19,8 +25,10 @@ final class SampleHandler: RPBroadcastSampleHandler {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let old = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                   includingPropertiesForKeys: nil)) ?? []
-        for url in old where url.lastPathComponent.hasPrefix(BroadcastStorage.chunkPrefix) {
-            try? FileManager.default.removeItem(at: url)
+        if old.contains(where: { $0.lastPathComponent.hasPrefix(BroadcastStorage.chunkPrefix) && $0.pathExtension == "pcm" }) {
+            finishBroadcastWithError(NSError(domain: "EarTranslation", code: 3,
+                                             userInfo: [NSLocalizedDescriptionKey: "上次屏幕音频尚未处理，请先打开 App 等待处理完成。"]))
+            return
         }
         setActive(true)
     }
@@ -33,6 +41,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
+        guard !storageFailed else { return }
         if Date().timeIntervalSince(lastHeartbeat) > 2 {
             setActive(true)
             lastHeartbeat = Date()
@@ -82,6 +91,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     private func flushChunks(includeTail: Bool = false) {
+        guard !storageFailed else { return }
         // 音频缓冲区每秒到达几十次，没写新块时不必遍历目录。
         guard pending.count >= Self.chunkSamples || (includeTail && !pending.isEmpty),
               let directory = BroadcastStorage.directory else { return }
@@ -89,19 +99,39 @@ final class SampleHandler: RPBroadcastSampleHandler {
         while pending.count >= Self.chunkSamples || (includeTail && !pending.isEmpty) {
             let count = min(pending.count, Self.chunkSamples)
             let samples = Array(pending.prefix(count))
-            pending.removeFirst(count)
             let data = samples.withUnsafeBytes { Data($0) }
             let name = String(format: "%020ld", sequence)
             sequence += 1
-            try? data.write(to: directory.appendingPathComponent(BroadcastStorage.chunkPrefix + name + ".pcm"),
-                            options: .atomic)
+            do {
+                try data.write(to: directory.appendingPathComponent(BroadcastStorage.chunkPrefix + name + ".pcm"),
+                               options: .atomic)
+            } catch {
+                failStorage("屏幕音频保存失败：\(error.localizedDescription)")
+                return
+            }
+            pending.removeFirst(count)
         }
-        let chunks = ((try? FileManager.default.contentsOfDirectory(at: directory,
-                                                                     includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.lastPathComponent.hasPrefix(BroadcastStorage.chunkPrefix) }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        // 最多积压 30 秒，App 处理不过来时丢弃最旧的音频。
-        for url in chunks.dropLast(Self.maximumQueuedChunks) { try? FileManager.default.removeItem(at: url) }
+        let chunks: [URL]
+        do {
+            chunks = try FileManager.default.contentsOfDirectory(at: directory,
+                                                                   includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(BroadcastStorage.chunkPrefix) && $0.pathExtension == "pcm" }
+        } catch {
+            failStorage("屏幕音频目录无法读取：\(error.localizedDescription)")
+            return
+        }
+        // Keep the backlog intact so a suspended App can consume it on return.
+        if chunks.count >= Self.maximumQueuedChunks {
+            failStorage("屏幕音频积压超过 10 分钟，已停止录制；已保存的音频不会被覆盖。")
+        }
+    }
+
+    private func failStorage(_ message: String) {
+        guard !storageFailed else { return }
+        storageFailed = true
+        setActive(false)
+        finishBroadcastWithError(NSError(domain: "EarTranslation", code: 2,
+                                         userInfo: [NSLocalizedDescriptionKey: message]))
     }
 
     private func setActive(_ value: Bool) {

@@ -233,6 +233,9 @@ final class ConversationController: ObservableObject {
         broadcastInbox.onSamples = { [weak self] samples in
             self?.capture.feedExternal(samples)
         }
+        broadcastInbox.onError = { [weak self] message in
+            self?.errorMessage = message
+        }
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .sink { [weak self] notification in
                 let value = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue

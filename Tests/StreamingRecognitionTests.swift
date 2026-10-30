@@ -108,6 +108,25 @@ final class StreamingRecognitionTests: XCTestCase {
         XCTAssertTrue(native.cancelled)
     }
 
+    func testEmptyNativeFinalRetriesWholeAudioWithFallback() async throws {
+        let native = StubIncrementalSpeech()
+        native.text = "  "
+        var fallbackCounts: [Int] = []
+        let recognizer = AdaptiveSpeechRecognizer(
+            fallback: { samples, language, _ in
+                fallbackCounts.append(samples.count)
+                return ("Recovered sentence.", language ?? "en")
+            },
+            detect: { _ in XCTFail("指定语言不应再次探测"); return nil },
+            nativeFactory: { _ in native }
+        )
+        let result = try await recognizer.recognize(Array(repeating: 0.2, count: 32_000),
+                                                    language: "en", final: true)
+        XCTAssertEqual(result.text, "Recovered sentence.")
+        XCTAssertEqual(fallbackCounts, [32_000])
+        XCTAssertTrue(native.cancelled)
+    }
+
     func testFallbackKeepsTheConfirmedAutomaticLanguage() async throws {
         var requested: [String?] = []
         let recognizer = AdaptiveSpeechRecognizer(
@@ -247,6 +266,7 @@ final class StreamingRecognitionTests: XCTestCase {
 @MainActor
 private final class StubIncrementalSpeech: IncrementalSpeechSession {
     let language: String
+    var text = "Native sentence."
     var failure: Error?
     private(set) var receivedCounts: [Int] = []
     private(set) var cancelled = false
@@ -254,7 +274,7 @@ private final class StubIncrementalSpeech: IncrementalSpeechSession {
     func update(_ samples: [Float], final: Bool) async throws -> SpeechRecognitionUpdate {
         receivedCounts.append(samples.count)
         if let failure { throw failure }
-        return SpeechRecognitionUpdate(text: "Native sentence.", language: language)
+        return SpeechRecognitionUpdate(text: text, language: language)
     }
     func cancel() { cancelled = true }
 }

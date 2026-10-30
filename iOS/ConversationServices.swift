@@ -48,6 +48,7 @@ struct ConversationServices {
             detect: { try await whisper.detectLanguage($0) },
             nativeFactory: { language in
                 if SherpaSpeech.supports(language) {
+                    if sherpa.lastError != nil { return nil }
                     try await sherpa.prepare()
                     return SherpaSpeechSession(service: sherpa, language: language)
                 }
@@ -64,7 +65,15 @@ struct ConversationServices {
                 try await sherpa.prepare()
                 return
             }
-            if SherpaSpeech.supports(language) { try await sherpa.prepare(); return }
+            if SherpaSpeech.supports(language) {
+                do { try await sherpa.prepare() }
+                catch is CancellationError { throw CancellationError() }
+                catch {
+                    try Task.checkCancellation()
+                    try await whisper.prepare()
+                }
+                return
+            }
             if let language, await AppleSpeechSession.installedTranscriber(language: language) != nil { return }
             try await whisper.prepare()
         }
@@ -73,10 +82,6 @@ struct ConversationServices {
             requestMicrophonePermission: { await AVAudioApplication.requestRecordPermission() },
             startCapture: { try capture.start() },
             recognition: { samples, language in
-                if SherpaSpeech.supports(language) {
-                    let update = try await sherpa.recognize(samples, language: language, final: true)
-                    return (text: update.text, language: update.language)
-                }
                 let update = try await recognizer.recognize(samples, language: language, final: true)
                 return (text: update.text, language: update.language)
             },
@@ -85,7 +90,6 @@ struct ConversationServices {
                                                mode: mode, preparedSession: prepared)
             },
             partialRecognition: { samples, language in
-                if SherpaSpeech.supports(language) { return try await sherpa.recognize(samples, language: language, final: false) }
                 return try await recognizer.recognize(samples, language: language, final: false)
             },
             commitRecognition: { recognizer.commit($0, language: $1) },

@@ -347,7 +347,7 @@ struct HistoryView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarLeading) {
-                    if store.canUndoDelete && !store.conversations.isEmpty {
+                    if store.canUndoDelete {
                         Button("撤销删除") {
                             do { try store.undoDelete() }
                             catch { storageError = error.localizedDescription }
