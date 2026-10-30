@@ -94,4 +94,19 @@ final class PageCaptureTests: XCTestCase {
         app.cells.element(boundBy: 0).tap()
         capture("19-历史详情-示例数据", app: app)
     }
+
+    func testHistoryDoneButtonRemainsAfterDeletingAllRecords() {
+        let app = launch(fixture: true)
+        app.buttons["历史"].tap()
+        XCTAssertTrue(app.buttons["编辑"].waitForExistence(timeout: 5))
+        app.buttons["编辑"].tap()
+        let count = app.cells.count
+        XCTAssertGreaterThan(count, 0)
+        for index in 0..<count { app.cells.element(boundBy: index).tap() }
+        app.buttons["删除所选（\(count)）"].tap()
+        XCTAssertTrue(app.buttons["撤销删除"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["完成"].exists)
+        app.buttons["完成"].tap()
+        XCTAssertFalse(app.buttons["完成"].exists)
+    }
 }

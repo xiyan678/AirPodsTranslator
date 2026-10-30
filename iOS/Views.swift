@@ -340,7 +340,7 @@ struct HistoryView: View {
             .navigationTitle("对话记录")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if !filtered.isEmpty {
+                    if !filtered.isEmpty || editMode.isEditing {
                         Button(editMode.isEditing ? "完成" : "编辑") {
                             editMode = editMode.isEditing ? .inactive : .active
                         }
@@ -355,7 +355,7 @@ struct HistoryView: View {
                     }
                 }
                 ToolbarItem(placement: .bottomBar) {
-                    if editMode.isEditing {
+                    if editMode.isEditing && !filtered.isEmpty {
                         Button("删除所选（\(selection.count)）", role: .destructive) {
                             do {
                                 try store.delete(selection)
@@ -371,7 +371,6 @@ struct HistoryView: View {
             .onChange(of: query) { _, _ in selection = [] }
             .onChange(of: store.conversations.map(\.id)) { _, ids in
                 selection.formIntersection(Set(ids))
-                if ids.isEmpty { editMode = .inactive }
             }
             .scrollContentBackground(.hidden)
             .background(StudioBackground().ignoresSafeArea())
