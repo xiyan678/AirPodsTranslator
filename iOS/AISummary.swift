@@ -157,6 +157,27 @@ enum SummaryAPIError: LocalizedError {
     }
 }
 
+/// Both built-in and custom services consume the complete transcript in bounded
+/// requests. Each next request merges the result of the preceding chunk.
+@MainActor
+enum SummaryBatch {
+    static func summarize(_ lines: [TranscriptLine], existing: SummaryOutline?,
+                          request: (String, SummaryOutline?) async throws -> SummaryOutline) async throws -> SummaryOutline {
+        let transcript = lines.map { "原文：\($0.original)\n译文：\($0.translated)" }.joined(separator: "\n")
+        let scalars = Array(transcript.unicodeScalars)
+        var outline = existing
+        // 8,000 Unicode scalars fit the server's 32,000-code-point and 128 KiB limits.
+        for offset in stride(from: 0, to: scalars.count, by: 8_000) {
+            try Task.checkCancellation()
+            let chunk = String(String.UnicodeScalarView(scalars[offset..<min(offset + 8_000, scalars.count)]))
+            outline = try await request(chunk, outline)
+            try Task.checkCancellation()
+        }
+        guard let outline else { throw SummaryAPIError.empty }
+        return outline
+    }
+}
+
 enum SummaryAPI {
     struct Message: Codable { let role: String; let content: String }
     private struct Body: Encodable {
@@ -168,15 +189,9 @@ enum SummaryAPI {
         struct Choice: Decodable { let message: Message }
         let choices: [Choice]
     }
-    static func summarize(_ lines: [TranscriptLine], configuration: SummaryConfiguration,
+    @MainActor static func summarize(_ lines: [TranscriptLine], configuration: SummaryConfiguration,
                           existing: SummaryOutline? = nil, session: URLSession = .shared) async throws -> SummaryOutline {
-        // 分块归纳完整记录，避免长会话仅总结最后一段。
-        let transcript = lines.map { "原文：\($0.original)\n译文：\($0.translated)" }.joined(separator: "\n")
-        let characters = Array(transcript)
-        var outline = existing
-        for offset in stride(from: 0, to: characters.count, by: 8_000) {
-            try Task.checkCancellation()
-            let chunk = String(characters[offset..<min(offset + 8_000, characters.count)])
+        try await SummaryBatch.summarize(lines, existing: existing) { chunk, outline in
             let content = outline.map { "已有总结：\n\($0.plainText)\n后续对话：\n\(chunk)" } ?? chunk
             var request = URLRequest(url: configuration.endpoint, timeoutInterval: 60)
             request.httpMethod = "POST"
@@ -191,10 +206,8 @@ enum SummaryAPI {
             guard (200..<300).contains(response.statusCode) else { throw SummaryAPIError.rejected(response.statusCode) }
             guard let decoded = try? JSONDecoder().decode(Response.self, from: data) else { throw SummaryAPIError.response }
             guard let content = decoded.choices.first?.message.content else { throw SummaryAPIError.empty }
-            outline = try SummaryOutline.decode(content)
+            return try SummaryOutline.decode(content)
         }
-        guard let outline else { throw SummaryAPIError.empty }
-        return outline
     }
 }
 
@@ -203,23 +216,24 @@ enum DefaultSummaryAPI {
         let transcript: String
         let previousSummary: String?
     }
-    static func summarize(_ lines: [TranscriptLine], existing: SummaryOutline? = nil) async throws -> SummaryOutline {
+    @MainActor static func summarize(_ lines: [TranscriptLine], existing: SummaryOutline? = nil) async throws -> SummaryOutline {
         guard let address = Bundle.main.object(forInfoDictionaryKey: "EarYiSummaryServiceURL") as? String,
               let url = URL(string: address), url.scheme == "https", url.host != nil else {
             throw SummaryAPIError.notConfigured
         }
-        let transcript = lines.map { "原文：\($0.original)\n译文：\($0.translated)" }.joined(separator: "\n")
-        var request = URLRequest(url: url, timeoutInterval: 60)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request = try await ServiceAuthorization.authorized(request)
-        request.httpBody = try JSONEncoder().encode(Body(transcript: transcript, previousSummary: existing?.plainText))
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw SummaryAPIError.response }
-        if response.statusCode == 401 || response.statusCode == 403 { throw SummaryAPIError.deviceVerification }
-        guard (200..<300).contains(response.statusCode) else { throw SummaryAPIError.rejected(response.statusCode) }
-        guard let content = String(data: data, encoding: .utf8) else { throw SummaryAPIError.response }
-        return try SummaryOutline.decode(content)
+        return try await SummaryBatch.summarize(lines, existing: existing) { transcript, previous in
+            var request = URLRequest(url: url, timeoutInterval: 60)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request = try await ServiceAuthorization.authorized(request)
+            request.httpBody = try JSONEncoder().encode(Body(transcript: transcript, previousSummary: previous?.plainText))
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse else { throw SummaryAPIError.response }
+            if response.statusCode == 401 || response.statusCode == 403 { throw SummaryAPIError.deviceVerification }
+            guard (200..<300).contains(response.statusCode) else { throw SummaryAPIError.rejected(response.statusCode) }
+            guard let content = String(data: data, encoding: .utf8) else { throw SummaryAPIError.response }
+            return try SummaryOutline.decode(content)
+        }
     }
 }
 

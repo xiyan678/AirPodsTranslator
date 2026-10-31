@@ -5,6 +5,41 @@ import AVFoundation
 
 @MainActor
 final class RegressionTests: XCTestCase {
+    func testLongDefaultAndCustomSummaryMergeEveryChunkInOrder() async throws {
+        let original = String(repeating: "会议内容🙂", count: 8_000)
+        let lines = [TranscriptLine(sourceLanguage: "zh", targetLanguage: "en",
+            original: original, translated: "English translation", isMine: false)]
+        let existing = SummaryOutline(keyPoints: ["earlier"], questions: [], nextSteps: [])
+        var chunks: [String] = []
+        let result = try await SummaryBatch.summarize(lines, existing: existing) { chunk, previous in
+            XCTAssertLessThanOrEqual(chunk.unicodeScalars.count, 8_000)
+            XCTAssertLessThanOrEqual(chunk.utf8.count, 32_000)
+            XCTAssertEqual(previous?.keyPoints, [chunks.isEmpty ? "earlier" : "batch \(chunks.count)"])
+            chunks.append(chunk)
+            return SummaryOutline(keyPoints: ["batch \(chunks.count)"], questions: [], nextSteps: [])
+        }
+        XCTAssertGreaterThan(chunks.count, 4)
+        XCTAssertEqual(chunks.joined(), "原文：\(original)\n译文：English translation")
+        XCTAssertEqual(result.keyPoints, ["batch \(chunks.count)"])
+    }
+
+    func testFailedSummaryChunkStopsFurtherRequests() async {
+        let lines = [TranscriptLine(sourceLanguage: "en", targetLanguage: "zh",
+            original: String(repeating: "A", count: 24_000), translated: "译文", isMine: false)]
+        var calls = 0
+        do {
+            _ = try await SummaryBatch.summarize(lines, existing: nil) { _, _ in
+                calls += 1
+                if calls == 2 { throw URLError(.notConnectedToInternet) }
+                return SummaryOutline(keyPoints: ["first"], questions: [], nextSteps: [])
+            }
+            XCTFail("分块失败不能返回不完整总结作为成功结果")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .notConnectedToInternet)
+        }
+        XCTAssertEqual(calls, 2)
+    }
+
     func testCloudSpeechUsesSiblingEndpointAndRejectsUnsecuredAddresses() {
         XCTAssertEqual(CloudSpeechAPI.endpoint(summaryAddress: "https://ai.duwang.win/v1/summary")?.absoluteString,
                        "https://ai.duwang.win/v1/speech")

@@ -83,9 +83,16 @@ final class ConversationController: ObservableObject {
     private let services: ConversationServices
     private let player = SpeechPlayer()
     private var observers = Set<AnyCancellable>()
-    private var pending: [[Float]] = []
-    private var pausedSamples: [[Float]] = []
-    private var activeSamples: (samples: [Float], session: UUID)?
+    private struct CapturedAudio {
+        let samples: [Float]
+        let language: String?
+    }
+    private func capturedAudio(_ samples: [Float]) -> CapturedAudio {
+        CapturedAudio(samples: samples, language: recognitionLanguage)
+    }
+    private var pending: [CapturedAudio] = []
+    private var pausedSamples: [CapturedAudio] = []
+    private var activeSamples: (audio: CapturedAudio, session: UUID)?
     private var latestPartial: (samples: [Float], window: UUID)?
     private var recognitionWindow: UUID?
     private var draining = false
@@ -110,6 +117,7 @@ final class ConversationController: ObservableObject {
     private var textRequestIsDialogue = false
     private var textDialogueConversationID: UUID?
     private var forcedLanguage: String?
+    private var dialogueInputStopped = false
 
     private struct PendingRevision {
         let lineID: UUID
@@ -141,7 +149,7 @@ final class ConversationController: ObservableObject {
         var lines: [TranscriptLine] = []
         var phase: ConversationPhase = .idle
         var hasEnded = false
-        var samples: [[Float]] = []
+        var samples: [CapturedAudio] = []
         var utterances: [PendingUtterance] = []
     }
     private var modeSessions: [ConversationMode: ModeSession] = [:]
@@ -286,7 +294,7 @@ final class ConversationController: ObservableObject {
             guard let self else { return }
             switch command {
             case "toggle": Task {
-                if self.isRunning { self.end(save: true) }
+                if self.isRunning { self.pause() }
                 else { await self.start() }
             }
             case "replay": self.replay()
@@ -337,6 +345,7 @@ final class ConversationController: ObservableObject {
             capture.quality = preferences.processingMode == .quality
             capture.liveSegmentation = mode == .listen
             configureCaptureCallbacks()
+            dialogueInputStopped = false
             try services.startCapture()
             transition(to: .listening)
             status = "正在识别\(AppLanguage.name(recognitionLanguage ?? preferences.sourceLanguage))…"
@@ -356,6 +365,7 @@ final class ConversationController: ObservableObject {
 
     func pause() {
         guard !isEnding else { return }
+        dialogueInputStopped = false
         if let item = activeLiveTranslation { pausedUtterances.append(item) }
         pausedUtterances.append(contentsOf: liveTranslations)
         liveTranslations = []
@@ -367,7 +377,7 @@ final class ConversationController: ObservableObject {
         recognitionWindow = nil
         if let item = waitingUtterance ?? restoringUtterance {
             pausedUtterances.append(item)
-        } else if let activeSamples { pausedSamples.append(activeSamples.samples) }
+        } else if let activeSamples { pausedSamples.append(activeSamples.audio) }
         languagePackResumeID = nil
         textRequestTimeout?.cancel()
         textRequestTimeout = nil
@@ -378,7 +388,7 @@ final class ConversationController: ObservableObject {
         restoringUtterance = nil
         activeSamples = nil
         pausedSamples.append(contentsOf: pending)
-        if let tail = capture.takePendingSpeech() { pausedSamples.append(tail) }
+        if let tail = capture.takePendingSpeech() { pausedSamples.append(capturedAudio(tail)) }
         usage.track(active: !subscriptions.hasUnlimitedAccess && mode == .listen && capture.isRecording)
         sessionID = nil
         playbackID = nil
@@ -431,7 +441,7 @@ final class ConversationController: ObservableObject {
         isEnding = true
         saveWhenEnded = save || preferences.saveAutomatically
         usage.track(active: !subscriptions.hasUnlimitedAccess && mode == .listen && capture.isRecording)
-        if let tail = capture.takePendingSpeech() { pending.append(tail) }
+        if let tail = capture.takePendingSpeech() { pending.append(capturedAudio(tail)) }
         capture.stop()
         latestPartial = nil
         player.stop()
@@ -526,7 +536,7 @@ final class ConversationController: ObservableObject {
         transition(to: .replaying)
         let activeSession = sessionID
         if isRunning {
-            if let tail = capture.takePendingSpeech() { pending.append(tail) }
+            if let tail = capture.takePendingSpeech() { pending.append(capturedAudio(tail)) }
             capture.stop()
             latestPartial = nil
             clearLivePreview()
@@ -562,6 +572,23 @@ final class ConversationController: ObservableObject {
         await start()
     }
 
+    /// Finish the current spoken turn without waiting for a silence timeout or
+    /// ending the conversation. Recognition/translation/playback finish in order.
+    func finishDialogueTurn() {
+        guard mode == .dialogue, isRunning, !isEnding else { return }
+        dialogueInputStopped = true
+        if let tail = capture.takePendingSpeech() { pending.append(capturedAudio(tail)) }
+        capture.stop()
+        latestPartial = nil
+        clearLivePreview()
+        guard !draining else { return }
+        if pending.isEmpty && pausedUtterances.isEmpty && waitingUtterance == nil {
+            pause()
+        } else {
+            Task { await self.drain() }
+        }
+    }
+
     private func configureCaptureCallbacks() {
         capture.onPartial = { [weak self] samples in
             guard let self else { return }
@@ -569,9 +596,10 @@ final class ConversationController: ObservableObject {
             Task { await self.drain() }
         }
         capture.onUtterance = { [weak self] samples in
-            self?.pending.append(samples)
-            self?.latestPartial = nil
-            Task { await self?.drain() }
+            guard let self else { return }
+            self.pending.append(self.capturedAudio(samples))
+            self.latestPartial = nil
+            Task { await self.drain() }
         }
     }
 
@@ -650,6 +678,11 @@ final class ConversationController: ObservableObject {
                 transition(to: .listening)
             }
             finishEndingIfReady()
+            if dialogueInputStopped, mode == .dialogue, !isEnding, sessionID == drainSession,
+               pending.isEmpty, pausedUtterances.isEmpty, waitingUtterance == nil,
+               languagePackResumeID == nil {
+                pause()
+            }
             if !isEnding, phase == .listening, !capture.isRecording { resumeCapture() }
         }
         while !pending.isEmpty || !pausedUtterances.isEmpty || latestPartial != nil {
@@ -788,9 +821,9 @@ final class ConversationController: ObservableObject {
         }
     }
 
-    private func process(_ samples: [Float]) async {
+    private func process(_ audio: CapturedAudio) async {
         guard let activeSession = sessionID else { return }
-        activeSamples = (samples, activeSession)
+        activeSamples = (audio, activeSession)
         defer {
             if activeSamples?.session == activeSession { activeSamples = nil }
             if sessionID == activeSession {
@@ -799,9 +832,9 @@ final class ConversationController: ObservableObject {
             }
         }
         transition(to: .recognizing)
-        let selectedLanguage = recognitionLanguage
+        let selectedLanguage = audio.language
         do {
-            let recognized = try await services.recognize(samples, language: selectedLanguage)
+            let recognized = try await services.recognize(audio.samples, language: selectedLanguage)
             guard sessionID == activeSession else { return }
             guard let recognizedText = RecognizedSpeechText.cleaned(recognized.text) else {
                 clearLivePreview()
@@ -946,7 +979,7 @@ final class ConversationController: ObservableObject {
                 return
             }
             if !keepListening {
-                if let tail = capture.takePendingSpeech() { pending.append(tail) }
+                if let tail = capture.takePendingSpeech() { pending.append(capturedAudio(tail)) }
                 capture.stop()
                 latestPartial = nil
             }
@@ -973,7 +1006,7 @@ final class ConversationController: ObservableObject {
                     resumeCapture()
                     return
                 }
-                if let tail = capture.takePendingSpeech() { pending.append(tail) }
+                if let tail = capture.takePendingSpeech() { pending.append(capturedAudio(tail)) }
                 capture.stop()
                 latestPartial = nil
                 waitingUtterance = item
@@ -1005,6 +1038,10 @@ final class ConversationController: ObservableObject {
     private func resumeCapture() {
         guard !isEnding, isRunning, sessionID != nil,
               phase != .replaying else { return }
+        if mode == .dialogue, dialogueInputStopped {
+            transition(to: .listening)
+            return
+        }
         // 同传的播报队列不拥有录音生命周期；对话模式保留轮流说话的等待。
         if mode != .listen, !capture.isRecording, services.playbackIsActive?() ?? player.isPlaying { return }
         do {
@@ -1265,6 +1302,9 @@ final class ConversationController: ObservableObject {
             let result = try await services.translate(text, from: source, to: target,
                                                         mode: preferences.processingMode, preparedSession: preparedSession)
             guard textRequestID == requestID else { return }
+            guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw URLError(.cannotDecodeContentData)
+            }
             textRequestTimeout?.cancel()
             textRequestTimeout = nil
             if waitingText?.requestID == requestID { waitingText = nil }
@@ -1289,7 +1329,7 @@ final class ConversationController: ObservableObject {
             let shouldResumeCapture = isRunning
             let activeSession = sessionID
             if shouldResumeCapture {
-                if let tail = capture.takePendingSpeech() { pending.append(tail) }
+                if let tail = capture.takePendingSpeech() { pending.append(capturedAudio(tail)) }
                 capture.stop()
                 latestPartial = nil
                 clearLivePreview()
@@ -1375,6 +1415,9 @@ final class ConversationController: ObservableObject {
                                                               mode: preferences.processingMode,
                                                               preparedSession: preparedSession)
             guard imageRequestID == requestID else { return }
+            guard !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw URLError(.cannotDecodeContentData)
+            }
             imageTranslation = translation
         } catch {
             guard imageRequestID == requestID else { return }

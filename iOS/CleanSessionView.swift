@@ -388,7 +388,7 @@ struct CleanSessionView: View {
             inputFocused = false
             controller.isKeyboardInputFocused = false
             controller.dialogueKeyboardEnabled = false
-            if selected { controller.pause() }
+            if selected { controller.finishDialogueTurn() }
             else { Task { await controller.beginDialogue(in: language) } }
         } label: {
             Label(selected ? "结束说话" : "说\(AppLanguage.name(language))",

@@ -16,6 +16,15 @@ function fixture(file = null) {
     }, purchaseVerifier: { verify: async tx => JSON.parse(tx) } });
   return { service, bits, advance: days => { now += days * 86400000; }, now: () => now };
 }
+
+test('malformed installation identity returns a client error and leaves the queue usable', async () => {
+  const api = fixture().service();
+  for (const installationID of [1, true, [], {}, null]) {
+    await assert.rejects(api.handle('status', { ...identity(), installationID }),
+      error => error.status === 400 && /身份无效/.test(error.message));
+  }
+  assert.equal((await api.handle('status', identity())).activated, false);
+});
 test('activation grants both one day; concurrent retries and restart do not duplicate rewards', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'referral-test-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const f = fixture(join(dir, 'referrals.json')); let api = f.service();

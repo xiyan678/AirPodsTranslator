@@ -86,11 +86,13 @@ private actor BroadcastAudioFiles {
         guard FileManager.default.fileExists(atPath: directory.path) else {
             return Snapshot(modified: nil, chunks: [])
         }
+        // Read the heartbeat first: the extension writes its tail before removing it.
+        // Listing first can miss that tail and then observe the removed heartbeat.
+        let marker = directory.appendingPathComponent(BroadcastStorage.activeFile)
+        let modified = (try? marker.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         // A transient scan failure must not falsely end an active broadcast.
         guard let entries = try? FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: nil) else { return nil }
-        let marker = directory.appendingPathComponent(BroadcastStorage.activeFile)
-        let modified = (try? marker.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         let chunks = entries
             .filter { $0.lastPathComponent.hasPrefix(BroadcastStorage.chunkPrefix) && $0.pathExtension == "pcm" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }

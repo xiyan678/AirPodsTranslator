@@ -49,7 +49,8 @@ export function createReferralService({ file = null, now = Date.now, deviceVerif
     user.rewardDays += days;
   }
   async function handle(action, body, token) {
-    const id = body?.installationID?.toLowerCase(), secret = body?.installationSecret;
+    const id = typeof body?.installationID === 'string' ? body.installationID.toLowerCase() : null;
+    const secret = body?.installationSecret;
     if (typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id) ||
         typeof secret !== 'string' || !/^[a-zA-Z0-9-]{64,128}$/.test(secret)) {
       throw new ReferralError(400, '设备身份无效');

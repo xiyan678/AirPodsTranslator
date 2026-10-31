@@ -245,6 +245,128 @@ final class LiveSessionTests: XCTestCase {
         controller.clearCurrent()
     }
 
+    func testFinishingDialogueTurnFlushesTailWithoutRestartingMicrophone() async {
+        let controller = controller()
+        await controller.beginDialogue(in: "en")
+        let conversationID = controller.currentConversationID
+        controller.capture.feedExternal(Array(repeating: 0.2, count: 3_200))
+        controller.finishDialogueTurn()
+        XCTAssertFalse(controller.capture.isRecording)
+        await eventually { controller.lines.count == 1 && controller.phase == .paused }
+        XCTAssertEqual(controller.lines.first?.translated, "你好")
+        XCTAssertFalse(controller.capture.isRecording, "用户已结束说话，译完后不能自动重新开麦")
+        XCTAssertFalse(controller.hasEnded, "结束本轮说话不应结束整段对话")
+        XCTAssertEqual(controller.currentConversationID, conversationID)
+        await controller.beginDialogue(in: "en")
+        XCTAssertTrue(controller.capture.isRecording)
+        XCTAssertEqual(controller.lines.count, 1)
+        controller.clearCurrent()
+    }
+
+    func testFinishingDialogueTurnWaitsForInFlightTranslationExactlyOnce() async {
+        let gate = TranslationGate()
+        defer { gate.release() }
+        let controller = controller(translationGate: gate)
+        await controller.beginDialogue(in: "en")
+        feedSentence(controller)
+        await eventually { gate.waiting }
+        controller.finishDialogueTurn()
+        controller.finishDialogueTurn()
+        XCTAssertFalse(controller.capture.isRecording)
+        gate.release()
+        await eventually { controller.lines.count == 1 && controller.phase == .paused }
+        XCTAssertFalse(controller.capture.isRecording)
+        XCTAssertEqual(controller.lines.first?.translated, "你好")
+        controller.clearCurrent()
+    }
+
+    func testWatchPausePreservesConversationAndContinueResumesIt() async {
+        let controller = controller()
+        await controller.start()
+        let conversationID = controller.currentConversationID
+        controller.watch.onCommand?("toggle")
+        await eventually { controller.phase == .paused }
+        XCTAssertFalse(controller.hasEnded)
+        XCTAssertFalse(controller.isEnding)
+        controller.watch.onCommand?("toggle")
+        await eventually { controller.capture.isRecording }
+        XCTAssertEqual(controller.currentConversationID, conversationID)
+        controller.clearCurrent()
+    }
+
+    func testPausedChineseAudioKeepsItsLanguageWhenEnding() async {
+        let capture = AudioCapture()
+        var languages: [String?] = []
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, language in languages.append(language); return ("你好", "zh") },
+            translation: { _, source, target, _, _ in
+                XCTAssertEqual(source, "zh")
+                XCTAssertEqual(target, "en")
+                return "Hello"
+            }
+        )
+        let store = ConversationStore(directory: directory, summarize: { _ in "测试" })
+        let controller = ConversationController(capture: capture, store: store, services: services)
+        let oldSource = controller.preferences.sourceLanguage
+        defer { controller.preferences.sourceLanguage = oldSource }
+        controller.preferences.sourceLanguage = "en"
+        controller.lastOtherLanguage = "en"
+        await controller.beginDialogue(in: "zh")
+        capture.feedExternal(Array(repeating: 0.2, count: 3_200))
+        controller.pause()
+        controller.end(save: true)
+        await eventually { controller.hasEnded && store.conversations.count == 1 }
+        XCTAssertEqual(languages, ["zh"], "暂停清除当前说话方向后，尾音仍须按录制时的语言识别")
+        XCTAssertEqual(controller.lines.first?.translated, "Hello")
+    }
+
+    func testChangingSpeakerDoesNotRelabelPausedAudio() async {
+        let capture = AudioCapture()
+        var languages: [String?] = []
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true },
+            startCapture: { capture.startExternal() },
+            recognition: { _, language in languages.append(language); return ("你好", "zh") },
+            translation: { _, _, _, _, _ in "Hello" }
+        )
+        let controller = ConversationController(capture: capture, services: services)
+        await controller.beginDialogue(in: "zh")
+        capture.feedExternal(Array(repeating: 0.2, count: 3_200))
+        controller.pause()
+        await controller.beginDialogue(in: "en")
+        await eventually { !controller.lines.isEmpty }
+        XCTAssertEqual(languages, ["zh"], "新选英语不能把上次暂停的中文音频改成英语识别")
+        controller.clearCurrent()
+    }
+
+    func testBlankTextTranslationKeepsDraftAndAllowsRetry() async {
+        let capture = AudioCapture()
+        var requests = 0
+        let services = ConversationServices(
+            prepareSpeech: {}, requestMicrophonePermission: { true }, startCapture: {},
+            recognition: { _, _ in ("", "en") },
+            translation: { _, _, _, _, _ in requests += 1; return requests == 1 ? " \n " : "你好" }
+        )
+        let controller = ConversationController(capture: capture, services: services)
+        controller.selectMode(.dialogue)
+        controller.dialogueKeyboardDraft = "Hello"
+        let quota = controller.usage.dialogueLines
+        await controller.translateText("Hello", from: "en", to: "zh", inDialogue: true)
+        XCTAssertEqual(controller.dialogueKeyboardDraft, "Hello")
+        XCTAssertTrue(controller.lines.isEmpty)
+        XCTAssertNil(controller.deliveredDialogueTextID)
+        XCTAssertEqual(controller.usage.dialogueLines, quota)
+        XCTAssertFalse(controller.isTranslatingText)
+        XCTAssertNotNil(controller.errorMessage)
+        await controller.translateText("Hello", from: "en", to: "zh", inDialogue: true)
+        XCTAssertEqual(controller.lines.first?.translated, "你好")
+        XCTAssertEqual(controller.dialogueKeyboardDraft, "")
+        XCTAssertNil(controller.errorMessage)
+        controller.clearCurrent()
+    }
+
     func testTimedOutTextCanBeResentBeforeOldTranslationReturns() async {
         let gate = TranslationGate()
         defer { gate.release() }
